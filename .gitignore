@@ -1,0 +1,44 @@
+# Secrets — never commit
+.env
+.env.local
+*.key
+
+# Local user data. The app stores everything here: the user's profile,
+# scraped posts, and candidate records for real people. None of it is ours
+# to publish.
+data/
+*.db
+*.db-journal
+*.db-wal
+*.sqlite3
+cache/
+out/
+raw/
+logs/
+
+# Porting aid: a copy of the single-user prototype, kept for reference while
+# its logic is ported. Contains the original author's window, Notion page id,
+# and listing copy — not a deliverable.
+reference/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+dist/
+build/
+*.egg-info/
+
+# Frontend
+node_modules/
+web/dist/
+# Built SPA is generated into the package at build time, not committed
+sublease/static/
+
+# OS / editor
+.DS_Store
+.idea/
+*.swp

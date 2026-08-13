@@ -25,8 +25,13 @@ class FixtureSource:
         except json.JSONDecodeError as exc:
             raise SourceError(f"fixtures at {self.path} are not valid JSON: {exc}") from exc
 
-        records = load_records(payload)[:limit]
-        return [
-            normalize(rec, rec.get("group") or cfg.name, self.name, slug=cfg.slug)
-            for rec in records
-        ]
+        try:
+            records = load_records(payload)[:limit]
+            return [
+                normalize(rec, rec.get("group") or cfg.name, self.name, slug=cfg.slug)
+                for rec in records
+            ]
+        except (AttributeError, TypeError) as exc:
+            raise SourceError(
+                f"fixtures at {self.path} have invalid structure: {exc}"
+            ) from exc

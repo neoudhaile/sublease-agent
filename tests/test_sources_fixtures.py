@@ -56,3 +56,19 @@ def test_registry_returns_a_fixture_source():
 def test_registry_rejects_an_unknown_method():
     with pytest.raises(SourceError):
         get_source("carrier-pigeon")
+
+
+def test_registry_missing_path_raises_source_error():
+    """Missing 'path' parameter for fixtures method should raise SourceError, not KeyError."""
+    with pytest.raises(SourceError) as exc_info:
+        get_source("fixtures")
+    assert "path" in str(exc_info.value).lower()
+
+
+def test_fixture_source_with_list_of_strings_raises_source_error(tmp_path):
+    """Fixtures file with list of strings instead of objects should raise SourceError."""
+    bad_fixture = tmp_path / "bad_structure.json"
+    bad_fixture.write_text('["not", "objects"]')
+    with pytest.raises(SourceError) as exc_info:
+        FixtureSource(bad_fixture).fetch(CFG, date(2026, 8, 1), 10)
+    assert "bad_structure.json" in str(exc_info.value) or "structure" in str(exc_info.value).lower()

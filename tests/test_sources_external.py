@@ -121,3 +121,24 @@ def test_apify_raises_source_error_on_http_failure():
 def test_apify_requires_a_token():
     with pytest.raises(SourceError):
         ApifySource(token="", http=FakeHttp(FakeResponse([])))
+
+
+def test_forage_raises_source_error_on_malformed_structure(tmp_path):
+    """Forage output that is valid JSON but structurally wrong raises SourceError."""
+    def run(cmd, **kwargs):
+        # Write a list of strings instead of list of objects
+        Path(cmd[cmd.index("-o") + 1]).write_text(json.dumps(["not", "an", "object"]))
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    src = ForageFacebookSource(raw_dir=tmp_path, runner=run)
+    with pytest.raises(SourceError, match="malformed forage output"):
+        src.fetch(CFG, since=date(2026, 8, 1), limit=10)
+
+
+def test_apify_raises_source_error_on_malformed_structure():
+    """Apify output that is valid JSON but structurally wrong raises SourceError."""
+    # Return a dict with 'posts' key containing a list of integers instead of objects
+    http = FakeHttp(FakeResponse({"posts": [1, 2, 3]}))
+    with pytest.raises(SourceError, match="malformed apify output"):
+        ApifySource(token="tok", http=http).fetch(
+            CFG, since=date(2026, 8, 1), limit=10)

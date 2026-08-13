@@ -72,3 +72,51 @@ def test_candidate_person_key_is_unique_per_profile(tmp_path):
     conn.execute(sql, args)
     with pytest.raises(sqlite3.IntegrityError):
         conn.execute(sql, args)
+
+
+class _FlakyConnection:
+    """Wraps a real connection and raises once a chosen statement is executed.
+
+    sqlite3.Connection is an immutable C type, so its `execute` method can't be
+    monkeypatched directly. This proxy delegates everything to the real connection
+    except one `.execute()` call, which it intercepts to simulate a crash or
+    interrupt partway through `migrate()`.
+    """
+
+    def __init__(self, real, trigger):
+        self._real = real
+        self._trigger = trigger
+
+    def execute(self, sql, *args, **kwargs):
+        if self._trigger in sql:
+            raise sqlite3.OperationalError("simulated interrupt")
+        return self._real.execute(sql, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def test_migrate_never_records_a_version_whose_schema_was_not_applied(tmp_path):
+    """Pins the atomicity of migrate(): a failure between applying a migration's
+    DDL and recording its version must leave neither in effect.
+
+    This forces the INSERT into schema_version to raise, simulating a crash or
+    interrupt right where the old DELETE-then-INSERT implementation had a window
+    between two separate autocommit statements. Against that old implementation
+    the migration's CREATE TABLE statements (run via executescript, which commits
+    immediately) survive the forced failure while the version write does not, so
+    current_version() reports 0 even though the schema tables already exist —
+    this test's second assertion catches exactly that mismatch and fails against
+    the old implementation. Against the fixed implementation, the whole migration
+    (DDL + version write) is one transaction, so the forced failure rolls
+    everything back and both assertions hold.
+    """
+    path = tmp_path / "t.db"
+    real_conn = connect(path)
+    flaky = _FlakyConnection(real_conn, "INSERT INTO schema_version")
+
+    with pytest.raises(Exception):
+        migrate(flaky)
+
+    assert current_version(real_conn) == 0
+    assert "profile" not in table_names(real_conn)

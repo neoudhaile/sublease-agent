@@ -33,18 +33,43 @@ def current_version(conn: sqlite3.Connection) -> int:
     return got["version"] if got else 0
 
 
+def _statements(script: str) -> list[str]:
+    """Split a migration script into individual statements.
+
+    executescript() can't be used for a migration's DDL: it issues an implicit COMMIT
+    before it runs, which would end any explicit transaction before the schema_version
+    write could join it. Each migration here is plain DDL with no semicolons inside
+    string literals, so splitting on ';' is safe.
+    """
+    return [s.strip() for s in script.split(";") if s.strip()]
+
+
 def migrate(conn: sqlite3.Connection) -> int:
-    """Apply every migration newer than the recorded version. Returns the new version."""
+    """Apply every migration newer than the recorded version. Returns the new version.
+
+    Each migration's DDL and its schema_version bump run inside one explicit
+    transaction (BEGIN/COMMIT, ROLLBACK on failure), so a crash or interrupt between
+    applying the schema and recording the version can never happen: either both landed
+    or neither did, and current_version() can never disagree with what schema is
+    actually present.
+    """
     version = current_version(conn)
     for index, script in enumerate(MIGRATIONS, start=1):
         if index <= version:
             continue
         try:
-            conn.executescript(script)
+            conn.execute("BEGIN")
+            for statement in _statements(script):
+                conn.execute(statement)
+            conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version INT NOT NULL)")
+            conn.execute("DELETE FROM schema_version")
+            conn.execute("INSERT INTO schema_version (version) VALUES (?)", (index,))
+            conn.execute("COMMIT")
         except sqlite3.Error as exc:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
             raise StoreError(f"migration {index} failed: {exc}") from exc
         version = index
-    conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version INT NOT NULL)")
-    conn.execute("DELETE FROM schema_version")
-    conn.execute("INSERT INTO schema_version (version) VALUES (?)", (version,))
     return version

@@ -3,15 +3,33 @@
 Ported from reference/pipeline/scrape.py:22-88. The canonical id matters:
 two scrapers seeing the same Facebook post must produce the same string, or the
 same person shows up twice (prototype lesson 7).
+
+`canonical_pid` recognises three post-id shapes wherever they appear (after
+`permalink/` or `posts/`, or in a `story_fbid=` query param): plain numeric
+ids (`12345`), composite `<actor_id>_<post_id>` ids (`100012345_998877`,
+captured in full so two different posts by the same actor don't collide),
+and Facebook's current opaque `pfbid...` permalink tokens (already globally
+unique, used as-is). The URL-building fallback path in `normalize` and the
+direct id-fallback path are kept in agreement so the same record yields the
+same id whether or not `slug` is supplied.
+
+`clean_author_url` strips Facebook's tracking query params (`ref`, `fbclid`,
+`__cft__[0]`, etc.) but keeps `id`, since `profile.php?id=...` is the
+canonical profile URL for any user without a vanity username - stripping it
+would collapse every such person onto the identical dead link
+`profile.php`.
 """
 from __future__ import annotations
 
 import hashlib
 import re
+from urllib.parse import parse_qsl, urlencode
 
 from sublease.sources.base import RawPost
 
-FB_POST_NUM = re.compile(r"(?:permalink|posts)/(\d+)|story_fbid=(\d+)")
+_FB_POST_TOKEN = r"pfbid[A-Za-z0-9]+|\d+(?:_\d+)?"
+FB_POST_ID = re.compile(
+    rf"(?:permalink|posts)/({_FB_POST_TOKEN})|story_fbid=({_FB_POST_TOKEN})")
 
 _TEXT_KEYS = ("text", "post_text", "content", "message", "postText")
 _URL_KEYS = ("url", "post_url", "postUrl", "link", "topLevelUrl", "facebookUrl")
@@ -19,6 +37,12 @@ _AUTHOR_NAME_KEYS = ("name", "username", "title")
 _AUTHOR_URL_KEYS = ("url", "profileUrl", "profile_url", "link")
 _TIME_KEYS = ("time", "date", "timestamp", "posted_at", "creation_time",
               "date_posted", "publishedTime")
+
+# Query params that carry author identity rather than tracking noise.
+# `profile.php?id=...` is Facebook's canonical URL for users without a
+# vanity username; everything else (`ref`, `fbclid`, `__cft__[0]`, ...) is
+# tracking junk and gets dropped.
+_AUTHOR_URL_KEEP_PARAMS = {"id"}
 
 
 def _first(rec: dict, *keys):
@@ -32,15 +56,19 @@ def _first(rec: dict, *keys):
 def clean_author_url(url: str | None) -> str | None:
     if not url:
         return url
-    url = url.split("?")[0]
-    if url.startswith("/"):
-        url = "https://www.facebook.com" + url
-    return url
+    path, sep, query = url.partition("?")
+    if sep:
+        kept = [(k, v) for k, v in parse_qsl(query, keep_blank_values=True)
+                if k in _AUTHOR_URL_KEEP_PARAMS]
+        path = path + ("?" + urlencode(kept) if kept else "")
+    if path.startswith("/"):
+        path = "https://www.facebook.com" + path
+    return path
 
 
 def canonical_pid(url: str | None, fallback: str) -> str:
     if url:
-        match = FB_POST_NUM.search(url)
+        match = FB_POST_ID.search(url)
         if match:
             return f"fbpost:{match.group(1) or match.group(2)}"
     return fallback

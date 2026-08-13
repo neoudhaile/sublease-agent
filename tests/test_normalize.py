@@ -75,3 +75,48 @@ def test_load_records_unwraps_common_envelopes():
     assert load_records({"posts": [{"a": 1}]}) == [{"a": 1}]
     assert load_records({"items": [{"a": 1}]}) == [{"a": 1}]
     assert load_records({"nothing": 1}) == []
+
+
+# --- Fix round 1 ---
+
+def test_pfbid_permalink_and_posts_urls_yield_the_same_id():
+    a = canonical_pid(
+        "https://facebook.com/groups/x/permalink/pfbid02Ab3cD4eFg5HiJkLmN6oPqRsTuVwXyZ/",
+        "fb")
+    b = canonical_pid(
+        "https://facebook.com/groups/y/posts/pfbid02Ab3cD4eFg5HiJkLmN6oPqRsTuVwXyZ",
+        "fb")
+    assert a == b == "fbpost:pfbid02Ab3cD4eFg5HiJkLmN6oPqRsTuVwXyZ"
+
+
+def test_pfbid_story_fbid_query_param_is_recognised():
+    assert canonical_pid(
+        "https://m.facebook.com/story.php"
+        "?story_fbid=pfbid02Ab3cD4eFg5HiJkLmN6oPqRsTuVwXyZ&id=1",
+        "fb") == "fbpost:pfbid02Ab3cD4eFg5HiJkLmN6oPqRsTuVwXyZ"
+
+
+def test_normalize_composite_actor_post_id_is_preserved_in_full():
+    rec = {"text": "ISO", "id": "100012345_998877", "author": "Solo Author"}
+    post = normalize(rec, "G", "facebook", slug="nycsublets")
+    assert post["id"] == "fbpost:100012345_998877"
+
+
+def test_normalize_composite_id_is_the_same_with_or_without_slug():
+    rec = {"text": "ISO", "id": "100012345_998877", "author": "Solo Author"}
+    with_slug = normalize(dict(rec), "G", "facebook", slug="nycsublets")
+    without_slug = normalize(dict(rec), "G", "facebook")
+    assert with_slug["id"] == without_slug["id"] == "fbpost:100012345_998877"
+
+
+def test_clean_author_url_preserves_id_on_profile_php():
+    assert clean_author_url(
+        "https://www.facebook.com/profile.php?id=61550123456789"
+    ) == "https://www.facebook.com/profile.php?id=61550123456789"
+
+
+def test_clean_author_url_strips_tracking_but_keeps_id_on_profile_php():
+    url = ("https://www.facebook.com/profile.php"
+           "?id=61550123456789&ref=group_x&fbclid=abc123")
+    assert clean_author_url(url) == \
+        "https://www.facebook.com/profile.php?id=61550123456789"

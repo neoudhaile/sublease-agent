@@ -1282,7 +1282,7 @@ Add these imports at the top:
 
 ```python
 import os
-from datetime import date as date_cls
+from datetime import date as date_cls, timedelta
 from pathlib import Path
 
 from sublease.cli.report import candidates_table, coverage_lines, rows_to_csv
@@ -1345,7 +1345,7 @@ def run(fixtures: bool = typer.Option(False, help="Use synthetic posts, no Faceb
     report = run_pipeline(
         conn, profile, llm, today,
         sources=build_sources(profile, FIXTURES if fixtures else None),
-        since=today - __import__("datetime").timedelta(days=days),
+        since=today - timedelta(days=days),
         limit=limit, dry_run=dry_run)
 
     for error in report.source_errors:

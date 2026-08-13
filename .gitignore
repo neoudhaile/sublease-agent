@@ -42,3 +42,6 @@ sublease/static/
 .DS_Store
 .idea/
 *.swp
+
+# Subagent-driven-development scratch (ledger, briefs, review packages)
+.superpowers/

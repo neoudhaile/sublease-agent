@@ -1031,11 +1031,23 @@ class PostRepo:
         self.conn = conn
 
     def upsert_many(self, posts: list[dict], now: datetime | None = None) -> int:
+        """Insert new posts, refresh known ones. Returns the count of NEW rows.
+
+        `first_seen` is written only on insert, so a post keeps the timestamp of
+        when this tool first saw it however many times it is re-scraped.
+        """
+        if not posts:
+            return 0
         stamp = _now(now)
-        inserted = 0
+        ids = [p["id"] for p in posts]
+        marks = ",".join("?" * len(ids))
+        existing = {
+            r["id"] for r in self.conn.execute(
+                f"SELECT id FROM post WHERE id IN ({marks})", ids)
+        }
         for post in posts:
             values = tuple(post.get(c) for c in POST_COLUMNS)
-            cur = self.conn.execute(
+            self.conn.execute(
                 "INSERT INTO post (id, source, url, group_name, author_name,"
                 " author_url, posted_at, text, first_seen) VALUES (?,?,?,?,?,?,?,?,?)"
                 " ON CONFLICT(id) DO UPDATE SET"
@@ -1043,13 +1055,7 @@ class PostRepo:
                 "   author_name=excluded.author_name, author_url=excluded.author_url,"
                 "   posted_at=excluded.posted_at, text=excluded.text",
                 (*values, stamp))
-            inserted += 1 if cur.rowcount == 1 and self._was_insert(post["id"], stamp) else 0
-        return inserted
-
-    def _was_insert(self, post_id: str, stamp: str) -> bool:
-        row = self.conn.execute(
-            "SELECT first_seen FROM post WHERE id=?", (post_id,)).fetchone()
-        return row is not None and row["first_seen"] == stamp
+        return len({p["id"] for p in posts} - existing)
 
     def get_many(self, ids: list[str]) -> dict[str, dict]:
         if not ids:

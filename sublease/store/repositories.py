@@ -220,6 +220,7 @@ class CandidateRepo:
                     " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                     (profile_id, c["person_key"], *payload, stamp))
                 new += 1
+                existing.add(c["person_key"])
         return new, updated
 
     def list(self, profile_id: int, tier: str | None = None,

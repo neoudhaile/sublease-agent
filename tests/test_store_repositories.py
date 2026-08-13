@@ -124,6 +124,20 @@ def test_candidate_sync_never_clobbers_a_human_edited_status(conn):
     assert (row["status"], row["tier"]) == ("replied", "C")
 
 
+def test_candidate_sync_handles_duplicate_person_key_within_one_call(conn):
+    pid = ProfileRepo(conn).save(a_profile()).id
+    PostRepo(conn).upsert_many([a_post()], now=NOW)
+    repo = CandidateRepo(conn)
+    result = repo.sync(pid, [
+        a_candidate(tier="A", tier_reason="first pass"),
+        a_candidate(tier="B", tier_reason="second pass"),
+    ], now=NOW)
+    assert result == (1, 1)
+    rows = repo.list(pid)
+    assert len(rows) == 1
+    assert (rows[0]["tier"], rows[0]["tier_reason"]) == ("B", "second pass")
+
+
 def test_candidate_list_filters_by_tier(conn):
     pid = ProfileRepo(conn).save(a_profile()).id
     PostRepo(conn).upsert_many([a_post("fbpost:1"), a_post("fbpost:2")], now=NOW)

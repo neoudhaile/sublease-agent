@@ -50,8 +50,8 @@ class AnthropicProvider:
         return self._client
 
     def extract_json(self, prompt: str, schema: type[BaseModel]) -> BaseModel:
-        client = self._get_client()
         try:
+            client = self._get_client()
             response = client.messages.parse(
                 model=self.model,
                 max_tokens=self.max_tokens,
@@ -71,6 +71,6 @@ class AnthropicProvider:
             self.extract_json(
                 "Reply with the JSON object {\"ok\": true} and nothing else.",
                 _HealthProbe)
-        except ProviderError as exc:
+        except Exception as exc:
             return ProviderHealth(ok=False, detail=str(exc))
         return ProviderHealth(ok=True, detail=f"anthropic reachable ({self.model})")

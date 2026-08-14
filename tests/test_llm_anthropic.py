@@ -83,3 +83,28 @@ def test_missing_api_key_is_reported_by_health_not_by_construction(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     health = AnthropicProvider(client=None, api_key=None).health()
     assert health.ok is False and "ANTHROPIC_API_KEY" in health.detail
+
+
+def test_extract_json_wraps_client_construction_error(monkeypatch):
+    """Client construction errors should be wrapped as ProviderError."""
+    def mock_anthropic_raises(*args, **kwargs):
+        raise RuntimeError("malformed ANTHROPIC_BASE_URL")
+
+    monkeypatch.setattr("anthropic.Anthropic", mock_anthropic_raises)
+    provider = AnthropicProvider(client=None, api_key="test-key")
+
+    with pytest.raises(ProviderError, match="malformed ANTHROPIC_BASE_URL"):
+        provider.extract_json("p", Payload)
+
+
+def test_health_handles_client_construction_error(monkeypatch):
+    """health() should return ProviderHealth instead of raising on construction errors."""
+    def mock_anthropic_raises(*args, **kwargs):
+        raise RuntimeError("malformed ANTHROPIC_BASE_URL")
+
+    monkeypatch.setattr("anthropic.Anthropic", mock_anthropic_raises)
+    provider = AnthropicProvider(client=None, api_key="test-key")
+
+    health = provider.health()
+    assert health.ok is False
+    assert "malformed ANTHROPIC_BASE_URL" in health.detail

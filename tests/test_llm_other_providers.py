@@ -1,0 +1,175 @@
+import json
+import subprocess
+import pytest
+from pydantic import BaseModel
+from sublease.errors import ProviderError
+from sublease.llm.claude_cli_provider import ClaudeCLIProvider
+from sublease.llm.ollama_provider import OllamaProvider
+from sublease.llm.openai_provider import OpenAIProvider
+
+
+class Payload(BaseModel):
+    value: str
+
+
+class FakeResponse:
+    def __init__(self, payload, status=200):
+        self._payload, self.status_code = payload, status
+
+    def json(self):
+        return self._payload
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+
+class FakeHttp:
+    def __init__(self, response):
+        self.response, self.calls = response, []
+
+    def post(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        return self.response
+
+
+def openai_response(content):
+    return FakeResponse({"choices": [{"message": {"content": content}}]})
+
+
+def test_openai_parses_the_chat_completion_body():
+    http = FakeHttp(openai_response(json.dumps({"value": "ok"})))
+    got = OpenAIProvider(api_key="k", http=http).extract_json("p", Payload)
+    assert got.value == "ok"
+
+
+def test_openai_requests_json_object_mode():
+    http = FakeHttp(openai_response(json.dumps({"value": "ok"})))
+    OpenAIProvider(api_key="k", http=http).extract_json("p", Payload)
+    body = http.calls[0][1]["json"]
+    assert body["response_format"] == {"type": "json_object"}
+
+
+def test_openai_sends_the_bearer_token():
+    http = FakeHttp(openai_response(json.dumps({"value": "ok"})))
+    OpenAIProvider(api_key="secret", http=http).extract_json("p", Payload)
+    assert http.calls[0][1]["headers"]["Authorization"] == "Bearer secret"
+
+
+def test_openai_schema_violation_is_a_provider_error():
+    http = FakeHttp(openai_response(json.dumps({"wrong": "shape"})))
+    with pytest.raises(ProviderError):
+        OpenAIProvider(api_key="k", http=http).extract_json("p", Payload)
+
+
+def test_openai_http_failure_is_a_provider_error():
+    http = FakeHttp(FakeResponse({}, status=500))
+    with pytest.raises(ProviderError):
+        OpenAIProvider(api_key="k", http=http).extract_json("p", Payload)
+
+
+def test_ollama_parses_its_response_envelope():
+    http = FakeHttp(FakeResponse({"response": json.dumps({"value": "local"})}))
+    assert OllamaProvider(http=http).extract_json("p", Payload).value == "local"
+
+
+def test_ollama_asks_for_json_format_and_no_streaming():
+    http = FakeHttp(FakeResponse({"response": json.dumps({"value": "x"})}))
+    OllamaProvider(http=http).extract_json("p", Payload)
+    body = http.calls[0][1]["json"]
+    assert body["format"] == "json" and body["stream"] is False
+
+
+def test_ollama_targets_the_configured_base_url():
+    http = FakeHttp(FakeResponse({"response": json.dumps({"value": "x"})}))
+    OllamaProvider(base_url="http://box:9999", http=http).extract_json("p", Payload)
+    assert http.calls[0][0].startswith("http://box:9999")
+
+
+def test_ollama_health_is_false_when_unreachable():
+    class Boom:
+        def post(self, *a, **k):
+            raise OSError("connection refused")
+
+    health = OllamaProvider(http=Boom()).health()
+    assert health.ok is False and "connection refused" in health.detail
+
+
+def test_openai_wraps_http_construction_error_as_provider_error(monkeypatch):
+    """Constructing the default httpx.Client is deferred into extract_json's
+    guarded path, so a construction failure (e.g. a bad proxy env var) is
+    reported as ProviderError rather than escaping raw."""
+    def boom(*args, **kwargs):
+        raise RuntimeError("bad proxy config")
+
+    monkeypatch.setattr("httpx.Client", boom)
+    provider = OpenAIProvider(api_key="k", http=None)
+    with pytest.raises(ProviderError, match="bad proxy config"):
+        provider.extract_json("p", Payload)
+
+
+def test_openai_health_handles_http_construction_error(monkeypatch):
+    def boom(*args, **kwargs):
+        raise RuntimeError("bad proxy config")
+
+    monkeypatch.setattr("httpx.Client", boom)
+    provider = OpenAIProvider(api_key="k", http=None)
+    health = provider.health()
+    assert health.ok is False and "bad proxy config" in health.detail
+
+
+def test_ollama_wraps_http_construction_error_as_provider_error(monkeypatch):
+    def boom(*args, **kwargs):
+        raise RuntimeError("bad proxy config")
+
+    monkeypatch.setattr("httpx.Client", boom)
+    provider = OllamaProvider(http=None)
+    with pytest.raises(ProviderError, match="bad proxy config"):
+        provider.extract_json("p", Payload)
+
+
+def test_ollama_health_handles_http_construction_error(monkeypatch):
+    def boom(*args, **kwargs):
+        raise RuntimeError("bad proxy config")
+
+    monkeypatch.setattr("httpx.Client", boom)
+    provider = OllamaProvider(http=None)
+    health = provider.health()
+    assert health.ok is False and "bad proxy config" in health.detail
+
+
+def fake_runner(stdout, returncode=0, stderr=""):
+    def run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, returncode, stdout, stderr)
+    return run
+
+
+def test_claude_cli_extracts_json_from_prose_wrapped_output():
+    runner = fake_runner('Sure! Here you go:\n{"value": "cli"}\nHope that helps.')
+    got = ClaudeCLIProvider(runner=runner).extract_json("p", Payload)
+    assert got.value == "cli"
+
+
+def test_claude_cli_passes_model_and_headless_flags():
+    seen = {}
+
+    def run(cmd, **kwargs):
+        seen["cmd"], seen["input"] = cmd, kwargs.get("input")
+        return subprocess.CompletedProcess(cmd, 0, '{"value":"x"}', "")
+
+    ClaudeCLIProvider(model="haiku", runner=run).extract_json("PROMPT", Payload)
+    assert seen["cmd"][:2] == ["claude", "-p"]
+    assert seen["cmd"][seen["cmd"].index("--model") + 1] == "haiku"
+    assert seen["input"] == "PROMPT"
+
+
+def test_claude_cli_nonzero_exit_is_a_provider_error():
+    runner = fake_runner("", returncode=1, stderr="not logged in")
+    with pytest.raises(ProviderError, match="not logged in"):
+        ClaudeCLIProvider(runner=runner).extract_json("p", Payload)
+
+
+def test_claude_cli_output_without_json_is_a_provider_error():
+    with pytest.raises(ProviderError, match="no JSON object"):
+        ClaudeCLIProvider(runner=fake_runner("I cannot help with that.")).extract_json(
+            "p", Payload)

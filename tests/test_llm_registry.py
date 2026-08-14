@@ -56,3 +56,36 @@ def test_fake_provider_raises_when_no_marker_matches():
 
 def test_fake_provider_reports_healthy():
     assert FakeProvider().health().ok is True
+
+
+def test_fake_provider_longest_marker_wins_on_substring_collision():
+    fake = FakeProvider(responses={
+        "fbpost:1": {"value": "post-1"},
+        "fbpost:10": {"value": "post-10"},
+    })
+    assert fake.extract_json("batch prompt with fbpost:10 inside", Payload).value == "post-10"
+    assert fake.extract_json("batch prompt with fbpost:1 inside", Payload).value == "post-1"
+
+
+def test_fake_provider_raises_on_equal_length_marker_ambiguity():
+    fake = FakeProvider(responses={
+        "fbpost:1": {"value": "a"},
+        "fbpost:2": {"value": "b"},
+    })
+    with pytest.raises(ProviderError, match="ambiguous"):
+        fake.extract_json("prompt mentions fbpost:1 and fbpost:2", Payload)
+
+
+def test_fake_provider_wraps_schema_mismatch_in_provider_error():
+    fake = FakeProvider(responses={"MARKER": {"not_the_value_field": "x"}})
+    with pytest.raises(ProviderError, match="MARKER"):
+        fake.extract_json("prompt containing MARKER", Payload)
+
+
+def test_fake_provider_fail_on_takes_precedence_over_matching_response():
+    fake = FakeProvider(
+        responses={"fbpost:1": {"value": "x"}},
+        fail_on={"fbpost:1"},
+    )
+    with pytest.raises(ProviderError):
+        fake.extract_json("prompt with fbpost:1 inside", Payload)

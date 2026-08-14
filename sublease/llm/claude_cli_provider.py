@@ -44,6 +44,9 @@ class ClaudeCLIProvider:
                                  timeout=TIMEOUT_SECONDS)
         except (OSError, subprocess.SubprocessError) as exc:
             raise ProviderError(f"could not run `{self.binary}`: {exc}") from exc
+        except UnicodeDecodeError as exc:
+            raise ProviderError(
+                f"undecodable output from `{self.binary}`: {exc}") from exc
         if result.returncode != 0:
             raise ProviderError(
                 f"claude -p failed: {(result.stderr or '').strip()[:300]}")

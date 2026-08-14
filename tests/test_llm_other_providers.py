@@ -3,7 +3,7 @@ import subprocess
 import pytest
 from pydantic import BaseModel
 from sublease.errors import ProviderError
-from sublease.llm.claude_cli_provider import ClaudeCLIProvider
+from sublease.llm.claude_cli_provider import ClaudeCLIProvider, TIMEOUT_SECONDS
 from sublease.llm.ollama_provider import OllamaProvider
 from sublease.llm.openai_provider import OpenAIProvider
 
@@ -173,3 +173,49 @@ def test_claude_cli_output_without_json_is_a_provider_error():
     with pytest.raises(ProviderError, match="no JSON object"):
         ClaudeCLIProvider(runner=fake_runner("I cannot help with that.")).extract_json(
             "p", Payload)
+
+
+def test_claude_cli_unicode_decode_error_is_a_provider_error():
+    """subprocess.run(..., text=True) raises UnicodeDecodeError when output
+    is not decodable in the ambient locale. This must surface as ProviderError."""
+    def boom_on_decode(cmd, **kwargs):
+        # Simulate what subprocess.run does when text=True and output can't decode
+        raise UnicodeDecodeError('utf-8', b'\xff\xfe', 0, 2, 'invalid start byte')
+
+    with pytest.raises(ProviderError, match="undecodable"):
+        ClaudeCLIProvider(runner=boom_on_decode).extract_json("p", Payload)
+
+
+def test_claude_cli_timeout_is_a_provider_error():
+    """subprocess.run raises TimeoutExpired when it times out."""
+    def timeout_runner(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, TIMEOUT_SECONDS)
+
+    with pytest.raises(ProviderError, match="timed out"):
+        ClaudeCLIProvider(runner=timeout_runner).extract_json("p", Payload)
+
+
+def test_claude_cli_health_succeeds_on_good_probe():
+    """health() should return ok=True when the probe succeeds."""
+    runner = fake_runner('{"ok": true}')
+    health = ClaudeCLIProvider(runner=runner).health()
+    assert health.ok is True
+
+
+def test_claude_cli_health_fails_gracefully_on_unicode_error():
+    """health() should return ok=False and not raise when extract_json fails."""
+    def boom_on_decode(cmd, **kwargs):
+        raise UnicodeDecodeError('utf-8', b'\xff\xfe', 0, 2, 'invalid start byte')
+
+    health = ClaudeCLIProvider(runner=boom_on_decode).health()
+    assert health.ok is False
+    assert "undecodable" in health.detail
+
+
+def test_claude_cli_health_fails_gracefully_on_timeout():
+    """health() should return ok=False and not raise when extract_json times out."""
+    def timeout_runner(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, TIMEOUT_SECONDS)
+
+    health = ClaudeCLIProvider(runner=timeout_runner).health()
+    assert health.ok is False

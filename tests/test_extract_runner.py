@@ -112,3 +112,60 @@ def test_enrichment_of_an_empty_list_does_nothing():
     provider = FakeProvider()
     assert run_enrichment([], provider) == []
     assert provider.calls == []
+
+
+def test_extraction_with_duplicated_and_missing_ids_is_treated_as_failure():
+    """Batch with right count but one id duplicated and one missing."""
+    posts = [post("fbpost:1", "august"), post("fbpost:2", "august"),
+             post("fbpost:3", "august")]
+    # Returns 3 results (correct count) but fbpost:1 is duplicated and fbpost:3 is missing
+    provider = FakeProvider(responses={"POSTS": {"results": [
+        {"id": "fbpost:1", "is_seeking": True},
+        {"id": "fbpost:1", "is_seeking": True},
+        {"id": "fbpost:2", "is_seeking": True},
+    ]}})
+    rows = rows_by_id(run_extraction(posts, provider, today=TODAY, batch_size=3))
+    # Every post should get exactly one row
+    assert sorted(rows.keys()) == ["fbpost:1", "fbpost:2", "fbpost:3"]
+    # The posts with mismatched IDs should have errors
+    assert rows["fbpost:1"]["error"] is not None
+    assert rows["fbpost:2"]["error"] is not None
+    assert rows["fbpost:3"]["error"] is not None
+
+
+def test_enrichment_with_duplicated_and_missing_ids_is_treated_as_failure():
+    """Batch with right count but one id duplicated and one missing."""
+    posts = [post("fbpost:1", "me and my partner"), post("fbpost:2", "solo"),
+             post("fbpost:3", "with friends")]
+    # Returns 3 results (correct count) but fbpost:1 is duplicated and fbpost:3 is missing
+    provider = FakeProvider(responses={"POSTS": {"results": [
+        {"id": "fbpost:1", "people_in_one_room": 2, "wants_multiple_rooms": False,
+         "gender": "male", "group_size": 2},
+        {"id": "fbpost:1", "people_in_one_room": 2, "wants_multiple_rooms": False,
+         "gender": "male", "group_size": 2},
+        {"id": "fbpost:2", "people_in_one_room": 1, "wants_multiple_rooms": False,
+         "gender": None, "group_size": 1},
+    ]}})
+    rows = rows_by_id(run_enrichment(posts, provider, batch_size=3))
+    # Every post should get exactly one row
+    assert sorted(rows.keys()) == ["fbpost:1", "fbpost:2", "fbpost:3"]
+    # All posts should be in the result
+    assert len(rows) == 3
+
+
+def test_extraction_with_unknown_id_is_treated_as_failure():
+    """Response contains an id that was never sent."""
+    posts = [post("fbpost:1", "august"), post("fbpost:2", "august")]
+    # Returns an id that was never sent
+    provider = FakeProvider(responses={"POSTS": {"results": [
+        {"id": "fbpost:1", "is_seeking": True},
+        {"id": "fbpost:999", "is_seeking": True},
+    ]}})
+    rows = rows_by_id(run_extraction(posts, provider, today=TODAY, batch_size=2))
+    # Every sent post should get exactly one row
+    assert sorted(rows.keys()) == ["fbpost:1", "fbpost:2"]
+    # Both should have errors because IDs don't match
+    assert rows["fbpost:1"]["error"] is not None
+    assert rows["fbpost:2"]["error"] is not None
+    # The unknown ID should not appear in results
+    assert "fbpost:999" not in rows

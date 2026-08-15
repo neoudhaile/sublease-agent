@@ -51,6 +51,14 @@ def _extract_batch(posts: list[dict], provider, today: date) -> list[dict]:
         if len(batch.results) != len(posts):
             raise ProviderError(
                 f"expected {len(posts)} results, got {len(batch.results)}")
+        # Validate that result ids match the sent ids exactly
+        sent_ids = {p["id"] for p in posts}
+        result_ids = {item.id for item in batch.results}
+        if sent_ids != result_ids:
+            missing = sent_ids - result_ids
+            unexpected = result_ids - sent_ids
+            raise ProviderError(
+                f"result ids do not match sent ids: missing {missing}, unexpected {unexpected}")
     except Exception as exc:
         if len(posts) == 1:
             return [_failed_extraction(posts[0], provider.model, str(exc))]
@@ -90,6 +98,14 @@ def _enrich_batch(posts: list[dict], provider) -> list[dict]:
         if len(batch.results) != len(posts):
             raise ProviderError(
                 f"expected {len(posts)} results, got {len(batch.results)}")
+        # Validate that result ids match the sent ids exactly
+        sent_ids = {p["id"] for p in posts}
+        result_ids = {item.id for item in batch.results}
+        if sent_ids != result_ids:
+            missing = sent_ids - result_ids
+            unexpected = result_ids - sent_ids
+            raise ProviderError(
+                f"result ids do not match sent ids: missing {missing}, unexpected {unexpected}")
     except Exception:
         if len(posts) == 1:
             return [_failed_enrichment(posts[0], provider.model)]

@@ -112,3 +112,33 @@ def test_defaults_reproduce_the_prototypes_household_rules():
     assert tier(22, gender="female", constraints=original)[0] == "B"
     assert tier(22, people_in_one_room=2, constraints=original)[0] == "D"
     assert tier(14, gender="male", constraints=original)[0] == "B"
+
+
+# Tests for multi_room_seekers_ok dealbreaker
+def test_multi_room_seekers_not_ok_with_multiple_rooms_is_tier_d():
+    """Test 1: multi_room_seekers_ok=False + wants_multiple_rooms=True → tier D"""
+    no_multi = Constraints(multi_room_seekers_ok=False)
+    label, reason = tier(22, wants_multiple_rooms=True, constraints=no_multi)
+    assert label == "D"
+    assert "multiple rooms" in reason
+
+
+def test_multi_room_seekers_not_ok_with_single_room_is_unaffected():
+    """Test 2: multi_room_seekers_ok=False + wants_multiple_rooms=False → unaffected"""
+    no_multi = Constraints(multi_room_seekers_ok=False)
+    assert tier(22, wants_multiple_rooms=False, constraints=no_multi)[0] == "A"
+
+
+def test_multi_room_seekers_ok_by_default_with_multiple_rooms():
+    """Test 3: multi_room_seekers_ok=True (default) + wants_multiple_rooms=True → tier A with note"""
+    label, reason = tier(22, wants_multiple_rooms=True)
+    assert label == "A"
+    assert "2 rooms" in reason
+
+
+def test_occupancy_dealbreaker_takes_precedence_over_multi_room():
+    """Test 4: candidate tripping both dealbreakers → tier D with occupancy reason"""
+    no_multi = Constraints(max_people_per_room=1, multi_room_seekers_ok=False)
+    label, reason = tier(22, people_in_one_room=2, wants_multiple_rooms=True, constraints=no_multi)
+    assert label == "D"
+    assert "one room" in reason  # occupancy reason takes precedence

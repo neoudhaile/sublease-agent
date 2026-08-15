@@ -32,6 +32,12 @@ def tier_for(facts: CandidateFacts, constraints: Constraints,
             f"(limit is {constraints.max_people_per_room}) — household dealbreaker"
         )
 
+    if not constraints.multi_room_seekers_ok and facts.wants_multiple_rooms:
+        return "D", (
+            "needs 2 rooms, but this household does not accept seekers "
+            "who need multiple rooms — household dealbreaker"
+        )
+
     coverage = facts.days_covered / window_days if window_days else 0.0
     if coverage >= constraints.tier_a_coverage:
         rank, notes = 1, [f"covers {facts.days_covered}/{window_days} days"]

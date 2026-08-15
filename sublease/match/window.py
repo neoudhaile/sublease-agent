@@ -19,10 +19,13 @@ def classify(start: date | None, end: date | None,
     if start is None and end is None:
         return None, 0
 
-    start = start or w_start
-    end = end or w_end
-    if end < start:
+    if start is not None and end is not None and end < start:
         start, end = end, start
+
+    start = start if start is not None else w_start
+    end = end if end is not None else w_end
+    if end < start:
+        return None, 0
 
     overlap_start = max(start, w_start)
     overlap_end = min(end, w_end)

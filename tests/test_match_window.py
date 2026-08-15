@@ -79,3 +79,21 @@ def test_one_day_before_the_window_does_not_match():
 ])
 def test_days_covered_never_exceeds_the_window_length(start, end):
     assert c(start, end)[1] <= 22
+
+
+def test_open_end_with_explicit_start_entirely_after_the_window_does_not_match():
+    assert c(date(2026, 10, 1), None) == (None, 0)
+
+
+def test_open_start_with_explicit_end_entirely_before_the_window_does_not_match():
+    assert c(None, date(2026, 8, 1)) == (None, 0)
+
+
+def test_open_end_with_explicit_start_entirely_before_the_window_still_matches():
+    fit, days = c(date(2026, 6, 1), None)
+    assert (fit, days) == ("wants-more", 22)
+
+
+def test_open_start_with_explicit_end_entirely_after_the_window_still_matches():
+    fit, days = c(None, date(2026, 10, 30))
+    assert (fit, days) == ("wants-more", 22)

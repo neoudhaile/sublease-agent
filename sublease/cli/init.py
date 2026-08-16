@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from datetime import date
 
+from sublease.errors import ConfigError
 from sublease.profile.models import (
     Constraints, Place, Price, Profile, SourceConfig, Templates, Window,
 )
@@ -29,6 +30,23 @@ DEFAULT_TEMPLATES = {
 }
 
 
+def parse_date(field: str, raw: object) -> date:
+    """Parse a user-supplied date, raising a typed, plain-language error.
+
+    Accepts a `date` object as-is so callers (the web wizard included) that
+    already hold a real date never pay a round trip through string parsing.
+    """
+    if isinstance(raw, date):
+        return raw
+    try:
+        return date.fromisoformat(str(raw))
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(
+            f'{field}: "{raw}" is not a valid date. '
+            f"Use YYYY-MM-DD, e.g. 2026-08-18."
+        ) from exc
+
+
 def build_profile(answers: dict) -> Profile:
     return Profile(
         name=answers["name"],
@@ -41,8 +59,8 @@ def build_profile(answers: dict) -> Profile:
             amenities=answers.get("amenities", []),
         ),
         window=Window(
-            start=date.fromisoformat(answers["window_start"]),
-            end=date.fromisoformat(answers["window_end"]),
+            start=parse_date("window_start", answers["window_start"]),
+            end=parse_date("window_end", answers["window_end"]),
             flexible=answers.get("flexible", False),
             allow_split=answers.get("allow_split", True),
             max_split=answers.get("max_split", 3),

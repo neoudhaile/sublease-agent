@@ -88,6 +88,11 @@ class ProfileRepo:
         })
 
     def list(self) -> list[Profile]:
+        # `ORDER BY id` is load-bearing: callers (e.g. `sublease doctor`, and
+        # `sublease init` when deciding whether a profile already exists)
+        # treat `list()[0]` as "the active profile". Do not remove this
+        # ordering or make it implementation-defined — the oldest profile
+        # (lowest id, i.e. first created) must always sort first.
         ids = [r["id"] for r in self.conn.execute("SELECT id FROM profile ORDER BY id")]
         return [p for p in (self.get(i) for i in ids) if p is not None]
 

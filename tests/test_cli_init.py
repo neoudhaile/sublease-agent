@@ -1,7 +1,13 @@
 from datetime import date
 import pytest
 from pydantic import ValidationError
+from typer.testing import CliRunner
+
 from sublease.cli.init import DEFAULT_TEMPLATES, build_profile
+from sublease.cli.main import app
+from sublease.errors import ConfigError
+from sublease.store.db import connect, migrate
+from sublease.store.repositories import ProfileRepo
 
 ANSWERS = {
     "name": "East Village room",
@@ -77,3 +83,113 @@ def test_the_default_outreach_copy_contains_no_emoticon_traps():
     from sublease.match.drafts import EMOTICON_TRAPS
     for trap in EMOTICON_TRAPS:
         assert trap not in DEFAULT_TEMPLATES["outreach_message"]
+
+
+# --- Fix round 1 -----------------------------------------------------------
+# Finding 1: a mistyped date must not crash `build_profile` with a bare
+# stdlib traceback — it must raise a typed, plain-language error naming the
+# offending field.
+
+def test_a_malformed_date_raises_a_clear_typed_error_naming_the_field():
+    with pytest.raises(ConfigError) as exc_info:
+        build_profile({**ANSWERS, "window_start": "08/18/2026"})
+    message = str(exc_info.value)
+    assert "window_start" in message
+    assert "YYYY-MM-DD" in message
+
+
+def test_a_malformed_end_date_also_names_its_own_field():
+    with pytest.raises(ConfigError) as exc_info:
+        build_profile({**ANSWERS, "window_end": "not a date"})
+    assert "window_end" in str(exc_info.value)
+
+
+# Finding 2: running `init` twice must not silently create a second profile.
+# ProfileRepo.save() must UPDATE when given a profile with an existing id,
+# and ProfileRepo.list() must return profiles in a deterministic order so
+# "the active profile" is a stable concept.
+
+def test_saving_a_profile_with_an_existing_id_updates_not_inserts(tmp_path):
+    conn = connect(tmp_path / "t.db")
+    migrate(conn)
+    repo = ProfileRepo(conn)
+
+    first = repo.save(build_profile(ANSWERS))
+    assert first.id is not None
+
+    corrected = build_profile({**ANSWERS, "name": "Corrected name"})
+    corrected.id = first.id
+    repo.save(corrected)
+
+    all_profiles = repo.list()
+    assert len(all_profiles) == 1
+    assert all_profiles[0].name == "Corrected name"
+
+
+def test_profile_repo_list_returns_a_deterministic_order(tmp_path):
+    conn = connect(tmp_path / "t.db")
+    migrate(conn)
+    repo = ProfileRepo(conn)
+
+    first = repo.save(build_profile({**ANSWERS, "name": "First"}))
+    second = repo.save(build_profile({**ANSWERS, "name": "Second"}))
+
+    assert [p.id for p in repo.list()] == [first.id, second.id]
+    assert [p.id for p in repo.list()] == [first.id, second.id]  # stable on repeat
+
+
+def test_running_init_twice_offers_replace_or_cancel_instead_of_duplicating(
+        tmp_path, monkeypatch):
+    """The CLI-level scenario the finding actually describes: a user runs
+    `init` twice (e.g. to fix a typo) and must be asked, not silently given
+    a second profile that `doctor` and later commands never see."""
+    monkeypatch.setenv("SUBLEASE_HOME", str(tmp_path))
+    runner = CliRunner()
+
+    first_run = "\n".join([
+        "My sublet", "East Village", "room",
+        "2026-08-18", "2026-09-08", "2200", "y", "1", "none", "",
+    ]) + "\n"
+    result1 = runner.invoke(app, ["init"], input=first_run)
+    assert result1.exit_code == 0, result1.output
+
+    conn = connect(tmp_path / "sublease.db")
+    assert [p.name for p in ProfileRepo(conn).list()] == ["My sublet"]
+
+    # Second run, replacing: confirm "y", then re-answer everything.
+    replace_run = "y\n" + "\n".join([
+        "My sublet v2", "East Village", "room",
+        "2026-08-19", "2026-09-09", "2300", "y", "1", "none", "",
+    ]) + "\n"
+    result2 = runner.invoke(app, ["init"], input=replace_run)
+    assert result2.exit_code == 0, result2.output
+    assert "already exists" in result2.output.lower()
+
+    profiles = ProfileRepo(conn).list()
+    assert [p.name for p in profiles] == ["My sublet v2"]  # replaced, not duplicated
+
+    # Third run, cancelling: the database must be untouched.
+    cancel_run = "n\n"
+    result3 = runner.invoke(app, ["init"], input=cancel_run)
+    assert result3.exit_code == 0, result3.output
+    assert "cancel" in result3.output.lower()
+
+    profiles_after_cancel = ProfileRepo(conn).list()
+    assert [p.name for p in profiles_after_cancel] == ["My sublet v2"]
+
+
+# Finding 3: the gender-preference prompt must say, in plain words, that it
+# never excludes anyone. Not unit-testable beyond checking the wording
+# reaches the terminal, so drive `init` end-to-end via CliRunner (no network,
+# no real interactive terminal) and check the rendered prompt text.
+
+def test_gender_preference_prompt_says_it_never_excludes_anyone(tmp_path, monkeypatch):
+    monkeypatch.setenv("SUBLEASE_HOME", str(tmp_path))
+    runner = CliRunner()
+    answers = "\n".join([
+        "My sublet", "East Village", "room",
+        "2026-08-18", "2026-09-08", "2200", "y", "1", "none", "",
+    ]) + "\n"
+    result = runner.invoke(app, ["init"], input=answers)
+    assert result.exit_code == 0, result.output
+    assert "never exclude" in result.output.lower()

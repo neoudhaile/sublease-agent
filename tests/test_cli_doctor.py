@@ -1,4 +1,7 @@
+from typer.testing import CliRunner
+
 from sublease.cli.doctor import Check, run_checks
+from sublease.cli.main import app
 from sublease.llm.base import ProviderHealth
 from sublease.store.db import connect, migrate
 from tests.fakes import FakeProvider
@@ -87,3 +90,28 @@ def test_one_failing_check_never_hides_the_others(tmp_path):
 def test_check_is_a_value_object():
     c = Check(name="x", ok=True, detail="fine")
     assert (c.name, c.ok, c.detail) == ("x", True, "fine")
+
+
+# --- Fix round 1 -----------------------------------------------------------
+# Finding 4: when provider construction fails, the real reason must reach
+# the `Check` detail the user is actually reading, not just a printed
+# warning that scrolls past.
+
+def test_a_failed_provider_construction_shows_its_reason_in_the_check(tmp_path):
+    conn = connect(tmp_path / "t.db")
+    migrate(conn)
+    checks = run_checks(conn=conn, provider=None,
+                        provider_error="unknown provider 'bogus'; expected one of ...",
+                        which=lambda _: "/bin/forage")
+    check = by_name(checks, "llm provider")
+    assert check.ok is False
+    assert "bogus" in check.detail
+
+
+def test_doctor_command_surfaces_the_real_provider_failure_end_to_end(tmp_path, monkeypatch):
+    monkeypatch.setenv("SUBLEASE_HOME", str(tmp_path))
+    runner = CliRunner()
+    result = runner.invoke(app, ["doctor", "--provider", "bogus-provider"])
+    assert "unknown provider" in result.output
+    assert "bogus-provider" in result.output
+    assert "no provider configured" not in result.output

@@ -35,9 +35,9 @@ def _check_database(conn: sqlite3.Connection) -> Check:
     return Check("database", True, f"schema v{version}")
 
 
-def _check_provider(provider) -> Check:
+def _check_provider(provider, error: str | None = None) -> Check:
     if provider is None:
-        return Check("llm provider", False, "no provider configured")
+        return Check("llm provider", False, error or "no provider configured")
     health = provider.health()
     return Check("llm provider", health.ok, health.detail)
 
@@ -63,10 +63,11 @@ def _check_profile(conn: sqlite3.Connection) -> Check:
 
 
 def run_checks(conn: sqlite3.Connection | None = None, provider=None,
+               provider_error: str | None = None,
                forage_binary: str = "forage", which=shutil.which) -> list[Check]:
     return [
         _check_database(conn),
-        _check_provider(provider),
+        _check_provider(provider, provider_error),
         _check_forage(forage_binary, which),
         _check_profile(conn),
     ]

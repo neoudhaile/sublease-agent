@@ -6,7 +6,8 @@ from rich.console import Console
 from rich.table import Table
 
 from sublease.cli.doctor import run_checks
-from sublease.cli.init import DEFAULT_TEMPLATES, build_profile
+from sublease.cli.init import DEFAULT_TEMPLATES, build_profile, parse_date
+from sublease.errors import ConfigError
 from sublease.llm.registry import DEFAULT_MODEL, DEFAULT_PROVIDER, get_provider
 from sublease.store.db import connect, migrate
 from sublease.store.repositories import ProfileRepo
@@ -16,18 +17,39 @@ console = Console()
 
 
 def _provider(name: str = DEFAULT_PROVIDER, model: str = DEFAULT_MODEL):
+    """Return (provider, error). `error` carries the reason construction
+    failed so callers (doctor's table) can show it, not just a printed
+    warning that scrolls away."""
     try:
-        return get_provider(name, model=model)
+        return get_provider(name, model=model), None
     except Exception as exc:      # noqa: BLE001 — doctor reports, never crashes
         console.print(f"[yellow]provider unavailable: {exc}[/yellow]")
-        return None
+        return None, str(exc)
+
+
+def _prompt_date(label: str, field: str) -> str:
+    """Prompt for a date, re-prompting in plain language on a bad format.
+
+    `build_profile` (called later, on the same string) validates again on
+    its own — this loop is the friendly front door, not the only guard.
+    """
+    while True:
+        raw = typer.prompt(label)
+        try:
+            parse_date(field, raw)
+        except ConfigError as exc:
+            console.print(f"[red]{exc}[/red]")
+            continue
+        return raw
 
 
 @app.command()
 def doctor(provider: str = DEFAULT_PROVIDER, model: str = DEFAULT_MODEL) -> None:
     """Check that everything a run needs is present and working."""
     conn = connect()
-    checks = run_checks(conn=conn, provider=_provider(provider, model))
+    resolved_provider, provider_error = _provider(provider, model)
+    checks = run_checks(conn=conn, provider=resolved_provider,
+                        provider_error=provider_error)
     table = Table(title="sublease doctor")
     table.add_column("check")
     table.add_column("status")
@@ -45,13 +67,35 @@ def init() -> None:
     conn = connect()
     migrate(conn)
 
+    # A profile already exists → ask before silently creating a second one.
+    # `ProfileRepo.list()` is ordered deterministically (oldest first), so
+    # `[0]` is always the same "active" profile every other command assumes.
+    existing = ProfileRepo(conn).list()
+    replace_id: int | None = None
+    if existing:
+        current = existing[0]
+        console.print(
+            f"\n[yellow]A profile already exists:[/yellow] {current.name} "
+            f"({current.window.start.isoformat()} to {current.window.end.isoformat()})")
+        if len(existing) > 1:
+            console.print(f"({len(existing)} profiles total — the active one "
+                          "is the first one created.)")
+        if not typer.confirm(
+                "Replace it with what you're about to enter? "
+                "Choosing no cancels and leaves it untouched", default=False):
+            console.print("[green]Cancelled.[/green] The database was not changed.")
+            raise typer.Exit(0)
+        replace_id = current.id
+
     answers: dict = {
         "name": typer.prompt("A name for this listing", default="My sublet"),
         "neighborhood": typer.prompt("Neighborhood"),
         "unit_type": typer.prompt("Renting a room or the whole unit?",
                                   default="room"),
-        "window_start": typer.prompt("First date available (YYYY-MM-DD)"),
-        "window_end": typer.prompt("Last date available (YYYY-MM-DD)"),
+        "window_start": _prompt_date("First date available (YYYY-MM-DD)",
+                                     "window_start"),
+        "window_end": _prompt_date("Last date available (YYYY-MM-DD)",
+                                   "window_end"),
         "total_price": float(typer.prompt("Total price for the whole window")),
         "allow_split": typer.confirm(
             "Would you accept several subletters covering different dates?",
@@ -61,8 +105,12 @@ def init() -> None:
     }
 
     preference = typer.prompt(
-        "Gender preference, if any (male/female/none). This is a soft ranking "
-        "signal only, and is used only when someone states it themselves",
+        "Do you have a preference for the gender of the person renting from "
+        "you? It's entirely optional, and it only ranks candidates — it "
+        "never excludes anyone, a non-matching person just drops one tier "
+        "in the results. It's applied only when someone states their own "
+        "gender in their own post; it is never guessed from a name or a "
+        "photo. Enter male, female, or none",
         default="none")
     answers["gender_preference"] = None if preference == "none" else preference
 
@@ -78,7 +126,10 @@ def init() -> None:
                         "method": "forage"})
     answers["sources"] = sources
 
-    profile = ProfileRepo(conn).save(build_profile(answers))
+    new_profile = build_profile(answers)
+    if replace_id is not None:
+        new_profile.id = replace_id
+    profile = ProfileRepo(conn).save(new_profile)
     console.print(f"\n[green]Saved profile {profile.id}: {profile.name}[/green]")
     console.print(f"Window is {profile.window.days} days across "
                   f"{len(profile.sources)} group(s).")

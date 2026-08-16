@@ -9,10 +9,29 @@ Replaces reference/pipeline/filter_rank.py:229-241, which had two defects:
   * It built a `set` of `date` objects day by day for every pair, which is
     quadratic in candidates and linear in window length.
 
-Both are fixed here: greedy set-cover up to `max_split` seekers, over intervals
-rather than day sets. Greedy is not provably optimal, but for interval cover on
-one timeline with a handful of picks it matches exhaustive search in practice
-while staying linear per pick.
+Both are fixed here, and `coverage()` runs in two stages with different
+optimality guarantees:
+
+  1. A left-to-right interval sweep tries first: track the leftmost uncovered
+     day, and among all candidates starting at or before it, pick the one
+     extending furthest right; repeat. This is the classic algorithm for
+     covering a segment with the fewest intervals, and it is *provably
+     optimal* for that objective — if any combination of at most `max_split`
+     candidates can fully cover the window, the sweep finds one. Max-gain
+     greedy is not optimal here: it can pick the single largest-overlap
+     candidate first and strand itself unable to fill the remainder within
+     budget, even when a full tiling exists (verified counterexample: a
+     10-day window, max_split=2, where a 6-day middle candidate outscores
+     either of two 5-day edge candidates that together tile the window
+     exactly — max-gain lands at 8/10, the sweep finds the 10/10 tiling).
+
+  2. If full coverage isn't reachable within `max_split`, coverage falls back
+     to max-gain greedy to maximise days covered under the hard cap, and
+     reports the honest shortfall. Maximising coverage under a hard cap on
+     picks is a different (harder) objective with no simple optimal
+     algorithm here; the greedy heuristic is not provably optimal for it, but
+     is a reasonable approximation and this stage only runs once full
+     coverage is already known to be out of reach.
 """
 from __future__ import annotations
 
@@ -57,6 +76,37 @@ def subtract(uncovered: list[Interval], taken: Interval) -> list[Interval]:
     return remaining
 
 
+def _sweep_full_coverage(spans: list[tuple[Candidate, Interval]], w_start: date,
+                          w_end: date, max_split: int) -> list[int] | None:
+    """Fewest-intervals full coverage via the classic left-to-right sweep.
+
+    Returns the chosen `spans` indices if the window can be fully covered
+    using at most `max_split` of them, else None. Provably optimal for "can
+    this window be fully covered, and with which fewest candidates" — see
+    the module docstring.
+    """
+    frontier = w_start
+    chosen: list[int] = []
+    used: set[int] = set()
+
+    while frontier <= w_end:
+        best_index, best_end = None, None
+        for index, (_, (start, end)) in enumerate(spans):
+            if index in used or start > frontier:
+                continue
+            if best_end is None or end > best_end:
+                best_index, best_end = index, end
+        if best_index is None or best_end < frontier:
+            return None
+        used.add(best_index)
+        chosen.append(best_index)
+        if len(chosen) > max_split:
+            return None
+        frontier = best_end + ONE_DAY
+
+    return chosen
+
+
 def coverage(candidates: list[Candidate], w_start: date, w_end: date,
              max_split: int = DEFAULT_MAX_SPLIT,
              near_complete_slack: int = DEFAULT_SLACK) -> CoveragePlan:
@@ -73,8 +123,18 @@ def coverage(candidates: list[Candidate], w_start: date, w_end: date,
         if interval is not None:
             spans.append((candidate, interval))
 
+    swept = _sweep_full_coverage(spans, w_start, w_end, max_split)
+    if swept is not None:
+        chosen = [spans[index][0] for index in swept]
+        return CoveragePlan(window_days=window_days, singles=singles,
+                            combination=chosen, combination_days=window_days)
+
+    # Full coverage isn't reachable within max_split: fall back to max-gain
+    # greedy to maximise days covered under the cap, reporting the honest
+    # shortfall. See module docstring — this stage is a heuristic, not
+    # provably optimal.
     uncovered: list[Interval] = [(w_start, w_end)]
-    chosen: list[Candidate] = []
+    chosen = []
     used: set[int] = set()
 
     while uncovered and len(chosen) < max_split:

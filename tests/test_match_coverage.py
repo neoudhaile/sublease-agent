@@ -149,3 +149,74 @@ def test_coverage_is_fast_on_a_large_candidate_pool():
     pool = [cand(f"c{n}", d(18 + n % 10), d(20 + n % 10)) for n in range(500)]
     plan = coverage(pool, W_START, W_END, max_split=3)
     assert len(plan.combination) <= 3
+
+
+# --- Fix round 1: sweep achieves full coverage where max-gain greedy misses it ---
+
+def test_sweep_finds_full_coverage_where_max_gain_greedy_would_miss_it():
+    """The reviewer's counterexample: a 10-day window, max_split=2.
+
+    L covers the middle 6 days (Jan 3-8) -- the single largest gain. P and Q
+    cover 5 days each (Jan 1-5, Jan 6-10) and together tile the window exactly.
+    Max-gain greedy picks L first (6 > 5), then can only fill one side within
+    the 2-pick budget, landing at 8/10. The fix's sweep-first stage must find
+    the full 10/10 tiling with P and Q instead.
+
+    Confirmed this test FAILS against the pre-fix max-gain-only implementation
+    (it returned combination_days == 8, combination == ['L', 'P']).
+    """
+    w_start, w_end = date(2026, 1, 1), date(2026, 1, 10)
+    plan = coverage([
+        cand("L", date(2026, 1, 3), date(2026, 1, 8)),
+        cand("P", date(2026, 1, 1), date(2026, 1, 5)),
+        cand("Q", date(2026, 1, 6), date(2026, 1, 10)),
+    ], w_start, w_end, max_split=2)
+    assert plan.combination_days == 10
+    assert sorted(c.name for c in plan.combination) == ["P", "Q"]
+
+
+def test_sweep_still_finds_the_three_way_tiling_that_already_worked():
+    """Regression guard: the case max-gain greedy already handled correctly."""
+    plan = coverage([
+        cand("A", W_START, d(24)),
+        cand("B", d(25), d(31)),
+        cand("C", date(2026, 9, 1), W_END),
+    ], W_START, W_END, max_split=3)
+    assert plan.combination_days == 22
+    assert sorted(c.name for c in plan.combination) == ["A", "B", "C"]
+
+
+def test_falls_back_to_partial_coverage_when_full_coverage_is_unreachable():
+    """When no combination within max_split fully covers the window, the
+    fallback heuristic reports an honest partial total -- no exception, and
+    it never claims more days than are actually covered."""
+    w_start, w_end = date(2026, 1, 1), date(2026, 1, 30)
+    plan = coverage([
+        cand("Left", date(2026, 1, 1), date(2026, 1, 10)),
+        cand("Right", date(2026, 1, 21), date(2026, 1, 30)),
+    ], w_start, w_end, max_split=2)
+    assert plan.combination_days < 30
+    assert plan.combination_days == 20
+    assert sorted(c.name for c in plan.combination) == ["Left", "Right"]
+
+
+def test_full_coverage_combination_is_deterministic_regardless_of_input_order():
+    def build(order):
+        return coverage([
+            cand(name, start, end) for name, start, end in order
+        ], date(2026, 1, 1), date(2026, 1, 10), max_split=2)
+
+    forward = [
+        ("L", date(2026, 1, 3), date(2026, 1, 8)),
+        ("P", date(2026, 1, 1), date(2026, 1, 5)),
+        ("Q", date(2026, 1, 6), date(2026, 1, 10)),
+    ]
+    reversed_order = list(reversed(forward))
+
+    plan_a = build(forward)
+    plan_b = build(reversed_order)
+
+    assert plan_a.combination_days == plan_b.combination_days == 10
+    assert (sorted(c.name for c in plan_a.combination)
+            == sorted(c.name for c in plan_b.combination)
+            == ["P", "Q"])

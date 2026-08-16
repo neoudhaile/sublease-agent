@@ -5,6 +5,7 @@ the group list — is a field here.
 """
 from __future__ import annotations
 
+import json
 import re
 from datetime import date
 from typing import Literal
@@ -105,11 +106,22 @@ class Templates(BaseModel):
 
 
 class SourceConfig(BaseModel):
+    """Identifies one configured source. Hashable so the pipeline can key an
+    injected `sources: dict[SourceConfig, Source]` mapping by it (task 18) —
+    pydantic models are unhashable by default because `rules` is a plain
+    dict, so `__hash__` is defined explicitly here, kept consistent with the
+    default (structural) `__eq__` by hashing the same fields it compares.
+    """
+
     platform: str = "facebook"
     slug: str
     name: str
     method: str = "forage"
     rules: dict = Field(default_factory=dict)
+
+    def __hash__(self) -> int:
+        return hash((self.platform, self.slug, self.name, self.method,
+                    json.dumps(self.rules, sort_keys=True)))
 
 
 class Profile(BaseModel):

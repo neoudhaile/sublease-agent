@@ -57,65 +57,45 @@ def run_pipeline(conn: sqlite3.Connection, profile: Profile, provider,
         fetched.extend(p for p in posts if (p.get("text") or "").strip())
     report.scraped = len(fetched)
 
-    if dry_run:
-        return _dry_run(conn, profile, provider, today, fetched, report)
+    # Stages 2-5 write to the database, so a dry run executes the exact same
+    # code as a real run inside a transaction and then rolls it back, rather
+    # than re-implementing the computation separately. That keeps the preview
+    # honest by construction: there is only one code path to drift from.
+    conn.execute("BEGIN")
+    try:
+        report.new_posts = PostRepo(conn).upsert_many(fetched)
 
-    report.new_posts = PostRepo(conn).upsert_many(fetched)
+        # 2. Extract — only posts with no extraction row yet.
+        pending_ids = PostRepo(conn).ids_without_extraction()
+        pending = list(PostRepo(conn).get_many(pending_ids).values())
+        if pending:
+            rows = run_extraction(pending, provider, today=today)
+            ExtractionRepo(conn).save_many(rows)
+            report.extracted = len(rows)
 
-    # 2. Extract — only posts with no extraction row yet.
-    pending_ids = PostRepo(conn).ids_without_extraction()
-    pending = list(PostRepo(conn).get_many(pending_ids).values())
-    if pending:
-        rows = run_extraction(pending, provider, today=today)
-        ExtractionRepo(conn).save_many(rows)
-        report.extracted = len(rows)
+        # 3. Enrich — seekers only, and only those not already enriched.
+        seekers = set(ExtractionRepo(conn).seeker_ids()) - EnrichmentRepo(conn).done_ids()
+        if seekers:
+            posts = list(PostRepo(conn).get_many(sorted(seekers)).values())
+            rows = run_enrichment(posts, provider)
+            EnrichmentRepo(conn).save_many(rows)
+            report.enriched = len(rows)
 
-    # 3. Enrich — seekers only, and only those not already enriched.
-    seekers = set(ExtractionRepo(conn).seeker_ids()) - EnrichmentRepo(conn).done_ids()
-    if seekers:
-        posts = list(PostRepo(conn).get_many(sorted(seekers)).values())
-        rows = run_enrichment(posts, provider)
-        EnrichmentRepo(conn).save_many(rows)
-        report.enriched = len(rows)
+        # 4. Match
+        candidates = rank(
+            {p["id"]: p for p in PostRepo(conn).get_all()},
+            ExtractionRepo(conn).get_all(),
+            EnrichmentRepo(conn).by_post_id(),
+            profile,
+        )
+        report.candidates = len(candidates)
 
-    # 4. Match
-    candidates = rank(
-        {p["id"]: p for p in PostRepo(conn).get_all()},
-        ExtractionRepo(conn).get_all(),
-        EnrichmentRepo(conn).by_post_id(),
-        profile,
-    )
-    report.candidates = len(candidates)
-
-    # 5. Store
-    new, _updated = CandidateRepo(conn).sync(profile.id, to_rows(candidates))
-    report.new_candidates = new
-    return report
-
-
-def _dry_run(conn, profile, provider, today, fetched, report: RunReport) -> RunReport:
-    """Report what a run would produce without writing anything."""
-    known = {p["id"]: p for p in PostRepo(conn).get_all()}
-    merged = {**known, **{p["id"]: p for p in fetched}}
-    report.new_posts = len(set(merged) - set(known))
-
-    extractions = ExtractionRepo(conn).get_all()
-    done = {r["post_id"] for r in extractions}
-    pending = [p for p in merged.values() if p["id"] not in done]
-    if pending:
-        fresh = run_extraction(pending, provider, today=today)
-        extractions = extractions + fresh
-        report.extracted = len(fresh)
-
-    enrichments = EnrichmentRepo(conn).by_post_id()
-    seekers = [r["post_id"] for r in extractions if r.get("is_seeking")]
-    todo = [merged[i] for i in seekers if i in merged and i not in enrichments]
-    if todo:
-        fresh = run_enrichment(todo, provider)
-        enrichments = {**enrichments, **{r["post_id"]: r for r in fresh}}
-        report.enriched = len(fresh)
-
-    candidates = rank(merged, extractions, enrichments, profile)
-    report.candidates = len(candidates)
-    report.new_candidates = len(candidates)
+        # 5. Store
+        new, _updated = CandidateRepo(conn).sync(profile.id, to_rows(candidates))
+        report.new_candidates = new
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    else:
+        conn.execute("ROLLBACK" if dry_run else "COMMIT")
     return report

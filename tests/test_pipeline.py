@@ -132,6 +132,42 @@ def test_dry_run_writes_no_posts(conn, profile):
     assert PostRepo(conn).get_all() == []
 
 
+def test_dry_run_counts_match_a_real_run_over_the_same_state(conn, profile):
+    """A dry-run preview must not report numbers a real run would not produce.
+
+    dry_run writes nothing (asserted elsewhere), so running it first against
+    `conn` leaves the database exactly as it started — the real run right
+    after it therefore sees the SAME starting state the dry run saw. Each
+    pass gets its own StubSource/FakeProvider instances (both are call
+    recorders) so neither pass's call history leaks into the other's.
+    """
+    posts = [raw("fbpost:1", "Emma"), raw("fbpost:2", "Olga")]
+
+    dry_report = run_pipeline(
+        conn, profile, provider_for("fbpost:1", "fbpost:2"), TODAY,
+        sources={CFG: StubSource(list(posts))}, dry_run=True)
+
+    # Confirm dry_run really left nothing behind before comparing counts.
+    assert PostRepo(conn).get_all() == []
+    assert CandidateRepo(conn).list(profile.id) == []
+
+    real_report = run_pipeline(
+        conn, profile, provider_for("fbpost:1", "fbpost:2"), TODAY,
+        sources={CFG: StubSource(list(posts))}, dry_run=False)
+
+    # `scraped` is a pure count of fetched posts, computed before either mode
+    # touches the db — identical by construction, included for completeness.
+    assert dry_report.scraped == real_report.scraped
+    assert dry_report.new_posts == real_report.new_posts
+    assert dry_report.extracted == real_report.extracted
+    assert dry_report.enriched == real_report.enriched
+    assert dry_report.candidates == real_report.candidates
+    assert dry_report.new_candidates == real_report.new_candidates
+
+    assert real_report.new_posts == 2
+    assert real_report.new_candidates == 2
+
+
 def test_only_seekers_are_enriched(conn, profile):
     provider = FakeProvider(responses={
         "fbpost:1": {"results": [{"id": "fbpost:1", "is_seeking": False}]},

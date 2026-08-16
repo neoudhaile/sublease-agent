@@ -1,16 +1,27 @@
 """The `sublease` command."""
 from __future__ import annotations
 
+import os
+from datetime import date as date_cls, timedelta
+from pathlib import Path
+
 import typer
 from rich.console import Console
 from rich.table import Table
 
 from sublease.cli.doctor import run_checks
 from sublease.cli.init import DEFAULT_TEMPLATES, build_profile, parse_date
+from sublease.cli.report import candidates_table, coverage_lines, rows_to_csv
 from sublease.errors import ConfigError
 from sublease.llm.registry import DEFAULT_MODEL, DEFAULT_PROVIDER, get_provider
+from sublease.match.coverage import coverage as compute_coverage
+from sublease.match.ranking import rank
+from sublease.pipeline import run_pipeline
+from sublease.sources.registry import get_source
 from sublease.store.db import connect, migrate
-from sublease.store.repositories import ProfileRepo
+from sublease.store.repositories import (
+    CandidateRepo, EnrichmentRepo, ExtractionRepo, PostRepo, ProfileRepo,
+)
 
 app = typer.Typer(help="Find a subletter for your place.", no_args_is_help=True)
 console = Console()
@@ -137,6 +148,98 @@ def init() -> None:
     console.print(f"  {DEFAULT_TEMPLATES['outreach_message']}\n")
     console.print("Next: run [bold]sublease doctor[/bold], then "
                   "[bold]sublease run[/bold].")
+
+
+FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "posts.json"
+
+
+def build_sources(profile, fixtures_path: Path | None = None) -> dict:
+    """Construct one adapter per configured source."""
+    built = {}
+    for cfg in profile.sources:
+        method = "fixtures" if fixtures_path else cfg.method
+        kwargs: dict = {}
+        if method == "fixtures":
+            kwargs["path"] = fixtures_path or FIXTURES
+        elif method == "apify":
+            kwargs["token"] = os.environ.get("APIFY_TOKEN", "")
+        try:
+            built[cfg] = get_source(method, **kwargs)
+        except Exception as exc:      # noqa: BLE001 — reported per source by the run
+            console.print(f"[yellow]{cfg.name}: {exc}[/yellow]")
+    return built
+
+
+def _active_profile(conn):
+    profiles = ProfileRepo(conn).list()
+    if not profiles:
+        console.print("[red]No profile yet. Run `sublease init` first.[/red]")
+        raise typer.Exit(1)
+    return profiles[0]
+
+
+@app.command()
+def run(fixtures: bool = typer.Option(False, help="Use synthetic posts, no Facebook."),
+        days: int = typer.Option(21, help="How far back to scrape."),
+        limit: int = typer.Option(300, help="Max posts per source."),
+        dry_run: bool = typer.Option(False, help="Report without writing."),
+        provider: str = DEFAULT_PROVIDER, model: str = DEFAULT_MODEL) -> None:
+    """Scrape, extract, match, and store candidates."""
+    conn = connect()
+    migrate(conn)
+    profile = _active_profile(conn)
+
+    llm, llm_error = _provider(provider, model)
+    if llm is None:
+        console.print(f"[red]provider unavailable: {llm_error}[/red]")
+        raise typer.Exit(1)
+
+    today = date_cls.today()
+    report = run_pipeline(
+        conn, profile, llm, today,
+        sources=build_sources(profile, FIXTURES if fixtures else None),
+        since=today - timedelta(days=days),
+        limit=limit, dry_run=dry_run)
+
+    for error in report.source_errors:
+        console.print(f"[yellow]source failed — {error}[/yellow]")
+    console.print(
+        f"Scraped {report.scraped} posts ({report.new_posts} new). "
+        f"Extracted {report.extracted}, enriched {report.enriched}. "
+        f"{report.candidates} candidates ({report.new_candidates} new).")
+    if dry_run:
+        console.print("[yellow]dry run — nothing was written[/yellow]")
+
+
+@app.command()
+def candidates(tier: str = typer.Option(None, help="Only this tier (A/B/C/D)."),
+               new: bool = typer.Option(False, help="Only ones you haven't contacted."),
+               as_csv: bool = typer.Option(False, "--csv", help="Emit CSV.")) -> None:
+    """List ranked candidates."""
+    conn = connect()
+    profile = _active_profile(conn)
+    rows = CandidateRepo(conn).list(profile.id, tier=tier, new_only=new)
+    if as_csv:
+        print(rows_to_csv(rows), end="")
+    else:
+        console.print(candidates_table(rows))
+
+
+@app.command()
+def coverage() -> None:
+    """Show the best single candidates and the best combination."""
+    conn = connect()
+    profile = _active_profile(conn)
+    ranked = rank(
+        {p["id"]: p for p in PostRepo(conn).get_all()},
+        ExtractionRepo(conn).get_all(),
+        EnrichmentRepo(conn).by_post_id(),
+        profile,
+    )
+    plan = compute_coverage(ranked, profile.window.start, profile.window.end,
+                            max_split=profile.window.max_split)
+    for line in coverage_lines(plan):
+        console.print(line)
 
 
 if __name__ == "__main__":

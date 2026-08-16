@@ -1,0 +1,65 @@
+"""Turn onboarding answers into a Profile.
+
+`build_profile` is pure so it can be tested without a terminal, and so the M2
+web wizard can reuse it unchanged.
+
+The default copy is written in sentences with no leading "- " lines, because
+Facebook's composer rewrites those into double bullets, and contains none of the
+ASCII sequences the composer converts to emoji.
+"""
+from __future__ import annotations
+
+from datetime import date
+
+from sublease.profile.models import (
+    Constraints, Place, Price, Profile, SourceConfig, Templates, Window,
+)
+
+DEFAULT_TEMPLATES = {
+    "outreach_message": (
+        "Hi {first_name}! I saw your post in {group} looking for a place "
+        "{their_dates}. I have a room available that overlaps your dates. "
+        "Happy to send photos and details if you're still looking."
+    ),
+    "listing_post": (
+        "Room available for sublet. Message me for photos and details, "
+        "and I'm happy to answer any questions about the place or the "
+        "neighborhood."
+    ),
+}
+
+
+def build_profile(answers: dict) -> Profile:
+    return Profile(
+        name=answers["name"],
+        place=Place(
+            neighborhood=answers["neighborhood"],
+            unit_type=answers.get("unit_type", "room"),
+            bedrooms=answers.get("bedrooms", 1),
+            bath=answers.get("bath", "shared"),
+            furnished=answers.get("furnished", True),
+            amenities=answers.get("amenities", []),
+        ),
+        window=Window(
+            start=date.fromisoformat(answers["window_start"]),
+            end=date.fromisoformat(answers["window_end"]),
+            flexible=answers.get("flexible", False),
+            allow_split=answers.get("allow_split", True),
+            max_split=answers.get("max_split", 3),
+        ),
+        price=Price(nightly=answers.get("nightly_price"),
+                    total=answers.get("total_price")),
+        constraints=Constraints(
+            max_people_per_room=answers.get("max_people_per_room", 1),
+            multi_room_seekers_ok=answers.get("multi_room_seekers_ok", True),
+            gender_preference=answers.get("gender_preference"),
+            pets_ok=answers.get("pets_ok", True),
+        ),
+        templates=Templates(
+            outreach_message=answers.get("outreach_message",
+                                         DEFAULT_TEMPLATES["outreach_message"]),
+            listing_post=answers.get("listing_post",
+                                     DEFAULT_TEMPLATES["listing_post"]),
+        ),
+        sources=[SourceConfig(**s) for s in answers.get("sources", [])],
+    )

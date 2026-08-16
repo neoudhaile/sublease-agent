@@ -22,6 +22,18 @@ class FakeProvider:
     regardless of dict insertion order. If two DIFFERENT markers of equal
     length both match the same prompt, that is genuine ambiguity in the test
     fixture and raises rather than silently guessing.
+
+    A second, different ambiguity exists when the same post id is sent
+    through two different passes (e.g. extraction then enrichment): both
+    prompts contain the bare id literally, so a bare marker cannot tell them
+    apart, and there is no extra text in the prompt to disambiguate with. For
+    that case a marker may be schema-qualified as f"{schema.__name__}:rest" —
+    e.g. "EnrichmentBatch:fbpost:7" — which matches only calls made with that
+    schema, and only on the "rest" part (matched against the prompt exactly
+    like a bare marker, longest-wins included). Qualified markers are tried
+    first for a given call; unqualified markers are only consulted if no
+    qualified marker matches, so callers who don't need this still work
+    exactly as before.
     """
 
     name = "fake"
@@ -39,18 +51,36 @@ class FakeProvider:
             if marker in prompt:
                 raise ProviderError(f"fake failure triggered by {marker!r}")
 
-        matches = [marker for marker in self.responses if marker in prompt]
-        if not matches:
-            raise ProviderError("no canned response matched this prompt")
+        qualifier = f"{schema.__name__}:"
+        qualified = {
+            full: full[len(qualifier):]
+            for full in self.responses
+            if full.startswith(qualifier) and full[len(qualifier):] in prompt
+        }
+        if qualified:
+            longest = max(len(rest) for rest in qualified.values())
+            longest_matches = [full for full, rest in qualified.items()
+                               if len(rest) == longest]
+            if len(longest_matches) > 1:
+                raise ProviderError(
+                    "ambiguous canned response: prompt matches multiple "
+                    f"{schema.__name__}-qualified markers of equal length: "
+                    f"{sorted(longest_matches)!r}"
+                )
+            marker = longest_matches[0]
+        else:
+            matches = [marker for marker in self.responses if marker in prompt]
+            if not matches:
+                raise ProviderError("no canned response matched this prompt")
 
-        longest = max(len(marker) for marker in matches)
-        longest_matches = [marker for marker in matches if len(marker) == longest]
-        if len(longest_matches) > 1:
-            raise ProviderError(
-                "ambiguous canned response: prompt matches multiple markers "
-                f"of equal length: {sorted(longest_matches)!r}"
-            )
-        marker = longest_matches[0]
+            longest = max(len(marker) for marker in matches)
+            longest_matches = [marker for marker in matches if len(marker) == longest]
+            if len(longest_matches) > 1:
+                raise ProviderError(
+                    "ambiguous canned response: prompt matches multiple markers "
+                    f"of equal length: {sorted(longest_matches)!r}"
+                )
+            marker = longest_matches[0]
 
         try:
             return schema.model_validate(self.responses[marker])

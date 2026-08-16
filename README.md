@@ -6,9 +6,10 @@ your household's rules, and hands you a shortlist with a draft message for each 
 Self-hosted and open source. Everything stays on the machine you run it on — there is no
 server, no account, and no copy of your data anywhere else.
 
-> **Status: under construction.** The engine is being built in the open. Today it can
-> gather posts and understand them; it cannot yet tell you who to message. See
-> [Where this actually is](#where-this-actually-is) before cloning with expectations.
+> **Status: M1 core engine complete.** The engine runs end to end from the command
+> line: scrape, extract, match, and a ranked shortlist with drafts. The web UI and
+> outreach queue are not built yet. See [Where this actually is](#where-this-actually-is)
+> before cloning with expectations.
 
 ## The idea
 
@@ -32,7 +33,9 @@ three-person split inside a day.
 
 ## Where this actually is
 
-**15 of 21 implementation tasks done. 241 tests passing.** Built and reviewed:
+**All 21 M1 implementation tasks done. 353 tests passing**, including an end-to-end
+golden test over synthetic fixtures and a regression test that pins the original
+prototype's household rules against the new engine. Built and reviewed:
 
 | Component | State |
 |---|---|
@@ -43,12 +46,31 @@ three-person split inside a day.
 | LLM providers — Anthropic, OpenAI, Ollama, claude-cli | ✅ |
 | Extraction & enrichment, batched with bisect recovery | ✅ |
 | Window overlap, tiering, person dedupe, draft rendering | ✅ |
-| Coverage search, ranking | in progress |
-| Pipeline orchestration, CLI | not yet |
+| Coverage search, ranking | ✅ |
+| Pipeline orchestration, CLI | ✅ |
 | Web UI, outreach queue | later milestones |
 
-There is **no `sublease` command on your PATH yet.** What exists is the library beneath
-it. If you clone this today, you get a well-tested engine and no way to run it end to end.
+`sublease` runs end to end from the command line — `init`, `doctor`, `run`,
+`candidates`, `coverage`. See [Use](#use) below. The web UI and outreach queue are
+M2/M3, not built yet.
+
+## Use
+
+```bash
+git clone <this repo> && cd sublease-agent
+uv sync
+uv run sublease init            # your place, dates, constraints, groups
+uv run sublease doctor          # verify provider, scraper, session, database
+uv run sublease run             # scrape, extract, match, store
+uv run sublease run --fixtures  # try the whole pipeline with no Facebook
+uv run sublease candidates      # ranked shortlist
+uv run sublease coverage        # best single, and best combination
+```
+
+Set `ANTHROPIC_API_KEY` for the default provider. Extraction runs on
+`claude-haiku-4-5`; a full backfill of a few hundred posts costs well under a dollar.
+`sublease init` can also select OpenAI, a local Ollama, or an existing Claude Code
+install.
 
 ## Design
 

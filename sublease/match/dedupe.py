@@ -8,19 +8,75 @@ Ported from reference/pipeline/filter_rank.py:169-180.
 """
 from __future__ import annotations
 
-from datetime import date
+import re
+from datetime import date, datetime, timezone
 
 from sublease.match.types import Candidate
 
+_UNIX_TS = re.compile(r"\d+")
 
-def person_key(name: str | None, start: date | None, end: date | None) -> str:
+
+def person_key(
+    name: str | None,
+    start: date | None,
+    end: date | None,
+    post_id: str | None = None,
+) -> str:
+    """Build the identity key a set of sightings collapse onto.
+
+    When `name` is missing we cannot tell two different anonymous posters
+    apart, and merging them would silently drop one from the shortlist.
+    Rather than guess, `post_id` (unique per post) is folded into the key so
+    every nameless post stays its own candidate. Named posters are keyed on
+    (name, dates) only, exactly as before, so cross-posting still collapses.
+    """
     who = (name or "").strip().lower()
-    return f"{who}|{start.isoformat() if start else ''}|{end.isoformat() if end else ''}"
+    base = f"{who}|{start.isoformat() if start else ''}|{end.isoformat() if end else ''}"
+    if not who and post_id:
+        return f"{base}|{post_id}"
+    return base
+
+
+def _parse_epoch(raw: str | None) -> float | None:
+    """Best-effort parse of a free-text post_date into a comparable epoch.
+
+    Handles ISO-8601 dates/datetimes and bare unix timestamps. Anything else
+    (human strings like "Aug 9", empty text, None) returns None so the caller
+    can treat it as the oldest possible post rather than raising or winning
+    a lexicographic comparison it has no business winning.
+    """
+    if not raw:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    if _UNIX_TS.fullmatch(text):
+        try:
+            return float(text)
+        except (ValueError, OverflowError):
+            return None
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    try:
+        return parsed.timestamp()
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _sort_key(candidate: Candidate) -> tuple[float, str]:
+    epoch = _parse_epoch(candidate.post_date)
+    # Unparseable/missing dates sort as oldest; post_id gives a deterministic
+    # tiebreak instead of leaving genuinely-tied candidates in input order.
+    return (epoch if epoch is not None else float("-inf"), candidate.post_id or "")
 
 
 def dedupe_people(candidates: list[Candidate]) -> list[Candidate]:
     """Keep the newest post per person; fold the rest into `also_posted_in`."""
-    newest_first = sorted(candidates, key=lambda c: str(c.post_date or ""), reverse=True)
+    newest_first = sorted(candidates, key=_sort_key, reverse=True)
 
     kept: dict[str, Candidate] = {}
     for candidate in newest_first:

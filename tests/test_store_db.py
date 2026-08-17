@@ -1,11 +1,11 @@
 import sqlite3
 import pytest
 from sublease.store.db import connect, current_version, migrate
-from sublease.store.schema import MIGRATIONS
+from sublease.store.schema import MIGRATIONS, _V1
 
 TABLES = {
     "profile", "source_config", "post", "extraction", "enrichment",
-    "candidate", "outreach_action", "my_post", "schema_version",
+    "candidate", "outreach_action", "my_post", "offer", "schema_version",
 }
 
 
@@ -54,6 +54,43 @@ def test_rows_come_back_keyed_by_column_name(tmp_path):
     migrate(conn)
     row = conn.execute("SELECT version FROM schema_version").fetchone()
     assert row["version"] == len(MIGRATIONS)
+
+
+def test_existing_v1_database_migrates_forward_without_data_loss(tmp_path):
+    """Pins that a database created before the `offer` migration existed gains the
+    new table and keeps its old data when migrated forward. A fresh-database test
+    alone would not catch a migration that only works starting from nothing.
+    """
+    path = tmp_path / "t.db"
+    conn = connect(path)
+    # Build a database at exactly the old (v1-only) schema, by hand, the way a
+    # real installed copy would look before this migration shipped.
+    conn.executescript(_V1)
+    conn.execute("CREATE TABLE schema_version (version INT NOT NULL)")
+    conn.execute("INSERT INTO schema_version (version) VALUES (1)")
+    conn.execute(
+        "INSERT INTO post (id, text, first_seen) VALUES ('fbpost:1','hi','2026-08-11')"
+    )
+    assert current_version(conn) == 1
+    assert "offer" not in table_names(conn)
+
+    migrate(conn)
+
+    assert current_version(conn) == len(MIGRATIONS)
+    assert "offer" in table_names(conn)
+    row = conn.execute("SELECT text FROM post WHERE id='fbpost:1'").fetchone()
+    assert row["text"] == "hi"
+
+
+def test_offer_post_id_cascades_on_post_delete(tmp_path):
+    conn = connect(tmp_path / "t.db")
+    migrate(conn)
+    conn.execute("INSERT INTO post (id, text, first_seen) VALUES ('fbpost:1','hi','2026-08-11')")
+    conn.execute(
+        "INSERT INTO offer (post_id, extracted_at) VALUES ('fbpost:1', '2026-08-11')"
+    )
+    conn.execute("DELETE FROM post WHERE id='fbpost:1'")
+    assert conn.execute("SELECT * FROM offer").fetchall() == []
 
 
 def test_candidate_person_key_is_unique_per_profile(tmp_path):

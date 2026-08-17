@@ -112,4 +112,24 @@ CREATE INDEX IF NOT EXISTS idx_outreach_profile_kind_sent
   ON outreach_action(profile_id, kind, sent_at);
 """
 
-MIGRATIONS: list[str] = [_V1]
+_V2 = """
+CREATE TABLE IF NOT EXISTS offer (
+  post_id TEXT PRIMARY KEY REFERENCES post(id) ON DELETE CASCADE,
+  price_amount REAL,
+  price_unit TEXT,
+  nightly_price REAL,
+  currency TEXT,
+  neighborhood TEXT,
+  unit_type TEXT,
+  bedrooms INT,
+  bath TEXT,
+  furnished BOOL,
+  start_date DATE,
+  end_date DATE,
+  model TEXT,
+  error TEXT,
+  extracted_at TIMESTAMP NOT NULL
+);
+"""
+
+MIGRATIONS: list[str] = [_V1, _V2]

@@ -18,6 +18,9 @@ EXTRACTION_COLUMNS = ("post_id", "is_seeking", "start_date", "end_date",
                       "date_text", "budget", "confidence", "model", "error")
 ENRICHMENT_COLUMNS = ("post_id", "people_in_one_room", "wants_multiple_rooms",
                       "gender", "group_size", "model")
+OFFER_COLUMNS = ("post_id", "price_amount", "price_unit", "nightly_price",
+                 "currency", "neighborhood", "unit_type", "bedrooms", "bath",
+                 "furnished", "start_date", "end_date", "model", "error")
 
 
 def _now(now: datetime | None) -> str:
@@ -187,6 +190,35 @@ class EnrichmentRepo:
 
     def done_ids(self) -> set[str]:
         return {r["post_id"] for r in self.conn.execute("SELECT post_id FROM enrichment")}
+
+
+class OfferRepo:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.conn = conn
+
+    def save_many(self, rows: list[dict], now: datetime | None = None) -> None:
+        stamp = _now(now)
+        self.conn.executemany(
+            "INSERT INTO offer (post_id, price_amount, price_unit, nightly_price,"
+            " currency, neighborhood, unit_type, bedrooms, bath, furnished,"
+            " start_date, end_date, model, error, extracted_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(post_id) DO NOTHING",
+            [(*(r.get(c) for c in OFFER_COLUMNS), stamp) for r in rows])
+
+    def by_post_id(self) -> dict[str, dict]:
+        return {r["post_id"]: dict(r)
+                for r in self.conn.execute("SELECT * FROM offer")}
+
+    def done_ids(self) -> set[str]:
+        return {r["post_id"] for r in self.conn.execute("SELECT post_id FROM offer")}
+
+    def usable(self, neighborhood_filter: str | None = None) -> list[dict]:
+        sql = "SELECT * FROM offer WHERE nightly_price IS NOT NULL"
+        args: list = []
+        if neighborhood_filter is not None:
+            sql += " AND neighborhood = ?"
+            args.append(neighborhood_filter)
+        return [dict(r) for r in self.conn.execute(sql, args)]
 
 
 class CandidateRepo:

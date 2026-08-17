@@ -5,7 +5,7 @@ from sublease.profile.models import (
 )
 from sublease.store.db import connect, migrate
 from sublease.store.repositories import (
-    CandidateRepo, EnrichmentRepo, ExtractionRepo, PostRepo, ProfileRepo,
+    CandidateRepo, EnrichmentRepo, ExtractionRepo, OfferRepo, PostRepo, ProfileRepo,
 )
 
 NOW = datetime(2026, 8, 11, 9, 0, 0)
@@ -94,6 +94,78 @@ def test_enrichment_is_keyed_by_post_id(conn):
          "gender": "female", "group_size": 1, "model": "fake"},
     ], now=NOW)
     assert EnrichmentRepo(conn).by_post_id()["fbpost:1"]["gender"] == "female"
+
+
+def an_offer(post_id="fbpost:1", **kw):
+    base = dict(post_id=post_id, price_amount=1400, price_unit="month",
+                nightly_price=46.05, currency="USD", neighborhood="East Village",
+                unit_type="room", bedrooms=2, bath="shared", furnished=True,
+                start_date="2026-08-18", end_date="2026-09-08", model="fake",
+                error=None)
+    return {**base, **kw}
+
+
+def test_offer_round_trips_by_post_id(conn):
+    PostRepo(conn).upsert_many([a_post()], now=NOW)
+    OfferRepo(conn).save_many([an_offer()], now=NOW)
+    row = OfferRepo(conn).by_post_id()["fbpost:1"]
+    assert row["price_amount"] == 1400
+    assert row["price_unit"] == "month"
+    assert row["nightly_price"] == 46.05
+    assert row["neighborhood"] == "East Village"
+    assert row["unit_type"] == "room"
+    assert row["bedrooms"] == 2
+    assert row["bath"] == "shared"
+    assert bool(row["furnished"]) is True
+    assert row["start_date"] == "2026-08-18"
+    assert row["end_date"] == "2026-09-08"
+    assert row["model"] == "fake"
+    assert row["error"] is None
+
+
+def test_offer_save_many_is_idempotent(conn):
+    PostRepo(conn).upsert_many([a_post()], now=NOW)
+    repo = OfferRepo(conn)
+    repo.save_many([an_offer(nightly_price=46.05)], now=NOW)
+    # A second save for the same post_id must be ignored (write-once, like
+    # extraction and enrichment), not overwrite the first value.
+    repo.save_many([an_offer(nightly_price=999.0)], now=NOW)
+    assert repo.by_post_id()["fbpost:1"]["nightly_price"] == 46.05
+    assert len(repo.by_post_id()) == 1
+
+
+def test_offer_done_ids_reflects_only_saved_posts(conn):
+    PostRepo(conn).upsert_many([a_post("fbpost:1"), a_post("fbpost:2")], now=NOW)
+    OfferRepo(conn).save_many([an_offer("fbpost:1")], now=NOW)
+    assert OfferRepo(conn).done_ids() == {"fbpost:1"}
+
+
+def test_usable_excludes_offers_with_no_nightly_price(conn):
+    PostRepo(conn).upsert_many([a_post("fbpost:1"), a_post("fbpost:2")], now=NOW)
+    OfferRepo(conn).save_many([
+        an_offer("fbpost:1", nightly_price=46.05),
+        an_offer("fbpost:2", nightly_price=None, price_unit="period",
+                 start_date=None, end_date=None),
+    ], now=NOW)
+    ids = {r["post_id"] for r in OfferRepo(conn).usable()}
+    assert ids == {"fbpost:1"}
+
+
+def test_usable_can_filter_by_neighborhood(conn):
+    PostRepo(conn).upsert_many([a_post("fbpost:1"), a_post("fbpost:2")], now=NOW)
+    OfferRepo(conn).save_many([
+        an_offer("fbpost:1", neighborhood="East Village"),
+        an_offer("fbpost:2", neighborhood="Williamsburg"),
+    ], now=NOW)
+    ids = {r["post_id"] for r in OfferRepo(conn).usable(neighborhood_filter="Williamsburg")}
+    assert ids == {"fbpost:2"}
+
+
+def test_offer_is_deleted_when_its_post_is_deleted(conn):
+    PostRepo(conn).upsert_many([a_post()], now=NOW)
+    OfferRepo(conn).save_many([an_offer()], now=NOW)
+    conn.execute("DELETE FROM post WHERE id='fbpost:1'")
+    assert OfferRepo(conn).by_post_id() == {}
 
 
 def a_candidate(**kw):

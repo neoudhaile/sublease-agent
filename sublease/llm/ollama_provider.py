@@ -5,6 +5,7 @@ from pydantic import BaseModel, ValidationError
 
 from sublease.errors import ProviderError
 from sublease.llm.base import ProviderHealth
+from sublease.llm.json_extract import coerce_envelope, parse_json_payload
 
 TIMEOUT_SECONDS = 300
 
@@ -38,8 +39,9 @@ class OllamaProvider:
             content = response.json()["response"]
         except Exception as exc:
             raise ProviderError(f"ollama request failed: {exc}") from exc
+        payload = coerce_envelope(parse_json_payload(content), schema)
         try:
-            return schema.model_validate_json(content)
+            return schema.model_validate(payload)
         except ValidationError as exc:
             raise ProviderError(f"ollama returned unusable JSON: {exc}") from exc
 

@@ -11,6 +11,7 @@ from pydantic import BaseModel, ValidationError
 
 from sublease.errors import ProviderError
 from sublease.llm.base import ProviderHealth
+from sublease.llm.json_extract import coerce_envelope, parse_json_payload
 
 ENDPOINT = "https://api.openai.com/v1/chat/completions"
 TIMEOUT_SECONDS = 120
@@ -57,8 +58,9 @@ class OpenAIProvider:
             content = response.json()["choices"][0]["message"]["content"]
         except Exception as exc:
             raise ProviderError(f"openai request failed: {exc}") from exc
+        payload = coerce_envelope(parse_json_payload(content), schema)
         try:
-            return schema.model_validate_json(content)
+            return schema.model_validate(payload)
         except ValidationError as exc:
             raise ProviderError(f"openai returned unusable JSON: {exc}") from exc
 

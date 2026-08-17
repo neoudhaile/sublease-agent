@@ -1,12 +1,18 @@
 # tests/test_extract_prompts.py
 from datetime import date
 import json
-from sublease.extract.prompts import build_enrichment_prompt, build_extraction_prompt
+from sublease.extract.prompts import (
+    build_enrichment_prompt, build_extraction_prompt, build_offer_prompt,
+)
 from sublease.extract.schemas import ExtractionBatch, EnrichmentBatch
 
 POSTS = [
     {"id": "fbpost:1", "text": "Looking for a sublet Aug 18 to Sep 8"},
     {"id": "fbpost:2", "text": "ISO a room through Labor Day"},
+]
+
+OFFER_POSTS = [
+    {"id": "fbpost:3", "text": "Room available $1400/mo in East Village"},
 ]
 
 
@@ -86,3 +92,30 @@ def test_enrichment_schema_allows_unknown_gender():
          "gender": None, "group_size": 1},
     ]})
     assert batch.results[0].gender is None
+
+
+# --- envelope instruction ---------------------------------------------
+# A live run against claude-cli returned a bare item object instead of
+# {"results": [...]}, because no prompt stated the envelope the schema
+# requires — only ITEMS were described, never the wrapper. These pin the
+# instruction in place so a future prompt rewrite can't silently drop it.
+
+def test_extraction_prompt_states_the_results_envelope():
+    prompt = build_extraction_prompt(POSTS, today=date(2026, 8, 11))
+    assert '"results"' in prompt
+    assert "single JSON object" in prompt
+    assert "markdown code fences" in prompt
+
+
+def test_enrichment_prompt_states_the_results_envelope():
+    prompt = build_enrichment_prompt(POSTS)
+    assert '"results"' in prompt
+    assert "single JSON object" in prompt
+    assert "markdown code fences" in prompt
+
+
+def test_offer_prompt_states_the_results_envelope():
+    prompt = build_offer_prompt(OFFER_POSTS, today=date(2026, 8, 11))
+    assert '"results"' in prompt
+    assert "single JSON object" in prompt
+    assert "markdown code fences" in prompt

@@ -3,13 +3,23 @@
 Both prompts are ported from the prototype, with one change: every date fact is
 computed from the reference date the caller passes rather than written as a
 literal.
+
+Every builder also states the JSON envelope the response must use. Only
+`AnthropicProvider` gets that shape enforced server-side (`messages.parse`);
+`ClaudeCLIProvider`, `OllamaProvider`, and `OpenAIProvider` depend entirely on
+the model reading and following this instruction, so it has to be explicit
+and unambiguous - see `_envelope_instructions` below.
 """
 from __future__ import annotations
 
 import json
 from datetime import date
 
+from pydantic import BaseModel
+
 from sublease.extract.dates import labor_day
+from sublease.extract.schemas import EnrichmentBatch, ExtractionBatch, OfferBatch
+from sublease.llm.json_extract import envelope_field
 
 EXTRACTION_TRUNCATE = 1500
 ENRICHMENT_TRUNCATE = 1200
@@ -23,6 +33,23 @@ def _labor_day_str(holiday: date) -> str:
     Windows, so the day number is interpolated directly instead.
     """
     return f"{holiday.strftime('%B')} {holiday.day}"
+
+
+def _envelope_instructions(schema: type[BaseModel]) -> str:
+    """Tell the model exactly what envelope to return, keyed off `schema`
+    itself so this text and the Pydantic model it describes cannot drift
+    apart - there is no key name hardcoded here to fall out of sync.
+    """
+    field = envelope_field(schema)
+    assert field is not None, f"{schema.__name__} has no single list field"
+    return (
+        f'Return a single JSON object with exactly one key, "{field}", whose '
+        "value is a JSON array containing one object per input post, in the "
+        "same order as the input. Do not wrap the JSON in markdown code "
+        "fences. Do not include any prose, explanation, or text before or "
+        "after the JSON object - the response must contain nothing but the "
+        "JSON object itself."
+    )
 
 
 def build_extraction_prompt(posts: list[dict], today: date) -> str:
@@ -50,7 +77,7 @@ Interpret fuzzy phrases sensibly: "early August" ~ Aug 1-7, "mid-August" ~ Aug 1
 ("from Aug 20"), leave end_date null. If there is no timeframe at all, both null
 with confidence "low".
 
-Return one object per post, in the same order as the input.
+{_envelope_instructions(ExtractionBatch)}
 
 POSTS:
 """
@@ -66,7 +93,7 @@ def build_enrichment_prompt(posts: list[dict]) -> str:
     rooms is still one person per room, which is not the dealbreaker a couple
     sharing one room is.
     """
-    header = """\
+    header = f"""\
 You read housing posts from people SEEKING a place, and extract who would
 actually move in. For each post return an object with:
 - "id": copied verbatim from the input
@@ -81,7 +108,7 @@ actually move in. For each post return an object with:
   from self-description ("I'm a 23 year old guy", "she/her", "girl looking").
   NEVER guess from the person's name. Use null when unclear.
 
-Return one object per post, in the same order as the input.
+{_envelope_instructions(EnrichmentBatch)}
 
 POSTS:
 """
@@ -131,7 +158,7 @@ Interpret fuzzy phrases sensibly: "early August" ~ Aug 1-7, "mid-August" ~
 Aug 15, "late August" / "end of August" ~ Aug 25-31, "the month of August" =
 Aug 1-31, "through Labor Day" = ending {holiday.isoformat()}.
 
-Return one object per post, in the same order as the input.
+{_envelope_instructions(OfferBatch)}
 
 POSTS:
 """

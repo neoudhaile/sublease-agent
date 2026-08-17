@@ -14,19 +14,13 @@ from pydantic import BaseModel, ValidationError
 
 from sublease.errors import ProviderError
 from sublease.llm.base import ProviderHealth
+from sublease.llm.json_extract import coerce_envelope, parse_json_payload
 
 TIMEOUT_SECONDS = 300
 
 
 class _HealthProbe(BaseModel):
     ok: bool
-
-
-def _first_json_object(text: str) -> str:
-    start, end = text.find("{"), text.rfind("}")
-    if start == -1 or end == -1 or end < start:
-        raise ProviderError(f"no JSON object in claude output: {text[:200]}")
-    return text[start:end + 1]
 
 
 class ClaudeCLIProvider:
@@ -51,8 +45,9 @@ class ClaudeCLIProvider:
         if result.returncode != 0:
             raise ProviderError(
                 f"claude -p failed: {(result.stderr or '').strip()[:300]}")
+        payload = coerce_envelope(parse_json_payload(result.stdout), schema)
         try:
-            return schema.model_validate_json(_first_json_object(result.stdout))
+            return schema.model_validate(payload)
         except ValidationError as exc:
             raise ProviderError(f"claude -p returned unusable JSON: {exc}") from exc
 

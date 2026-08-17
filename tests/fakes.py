@@ -93,3 +93,11 @@ class FakeProvider:
 
     def health(self) -> ProviderHealth:
         return ProviderHealth(ok=True, detail="fake provider")
+
+    def ready(self) -> ProviderHealth:
+        """Delegates to `health()` by default so a subclass that overrides
+        only `health()` (e.g. to simulate a real provider's credential
+        failure) is picked up by both the default `doctor` check and
+        `doctor --probe` alike, exactly as a real provider's failure would
+        be caught at both levels."""
+        return self.health()

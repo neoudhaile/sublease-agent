@@ -62,6 +62,17 @@ class OpenAIProvider:
         except ValidationError as exc:
             raise ProviderError(f"openai returned unusable JSON: {exc}") from exc
 
+    def ready(self) -> ProviderHealth:
+        if not self._api_key:
+            return ProviderHealth(ok=False, detail="OPENAI_API_KEY is not set")
+        try:
+            self._get_http()
+        except Exception as exc:
+            return ProviderHealth(ok=False, detail=str(exc))
+        return ProviderHealth(
+            ok=True,
+            detail=f"openai configured ({self.model}); connectivity not verified")
+
     def health(self) -> ProviderHealth:
         try:
             self.extract_json('Return the JSON object {"ok": true}.', _HealthProbe)

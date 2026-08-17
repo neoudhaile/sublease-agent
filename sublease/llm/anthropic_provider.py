@@ -66,6 +66,15 @@ class AnthropicProvider:
             raise ProviderError("anthropic returned no parsed output")
         return parsed
 
+    def ready(self) -> ProviderHealth:
+        try:
+            self._get_client()
+        except Exception as exc:
+            return ProviderHealth(ok=False, detail=str(exc))
+        return ProviderHealth(
+            ok=True,
+            detail=f"anthropic configured ({self.model}); connectivity not verified")
+
     def health(self) -> ProviderHealth:
         try:
             self.extract_json(

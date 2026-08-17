@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from sublease.match.dedupe import dedupe_people, person_key
+from sublease.match.dedupe import dedupe_people, person_key, recency_sort_key
 from sublease.match.drafts import build_draft
 from sublease.match.tiering import tier_for
 from sublease.match.types import FIT_ORDER, TIER_ORDER, Candidate
@@ -83,7 +83,7 @@ def rank(posts: dict[str, dict], extractions: list[dict],
             candidate.facts(), profile.constraints, window_days)
         candidate.draft = build_draft(profile.templates.outreach_message, candidate)
 
-    candidates.sort(key=lambda c: str(c.post_date or ""), reverse=True)
+    candidates.sort(key=recency_sort_key, reverse=True)
     candidates.sort(key=lambda c: (TIER_ORDER.get(c.tier or "", 9),
                                    -c.days_covered,
                                    FIT_ORDER.get(c.fit, 9)))

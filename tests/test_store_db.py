@@ -157,3 +157,93 @@ def test_migrate_never_records_a_version_whose_schema_was_not_applied(tmp_path):
 
     assert current_version(real_conn) == 0
     assert "profile" not in table_names(real_conn)
+
+
+# --- Fix wave 2026-08-15 -----------------------------------------------------
+# Finding 4: migrate() used to split each migration's SQL text on ';' at
+# runtime — safe only because the two migrations that existed happened to
+# have no semicolon inside a string literal or trigger body. MIGRATIONS is
+# now a list of migrations, each already a list of individual statements, so
+# migrate() never splits anything. These tests verify (a) the before/after
+# equivalence of the two real migrations under the new representation, and
+# (b) that a migration containing a semicolon inside a string literal — the
+# exact case the old splitter would have corrupted — now applies correctly.
+
+def schema_sql(conn):
+    """The full set of CREATE statements SQLite recorded for this database,
+    keyed by (type, name) so table/index identity as well as their DDL can be
+    compared regardless of row order. Whitespace is collapsed: the migration
+    statements were reindented (not reworded) when they were split out of the
+    old text blobs into a list, so an identical schema is what this proves —
+    not incidentally-identical source formatting.
+    """
+    rows = conn.execute(
+        "SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL"
+    ).fetchall()
+    return {(r["type"], r["name"]): " ".join(r["sql"].split()) for r in rows}
+
+
+def test_a_fresh_migration_produces_the_same_schema_as_the_old_blob_representation():
+    """Before/after equivalence proof for finding 4: migrating a fresh database
+    through the new list-of-statements MIGRATIONS must create byte-identical
+    DDL to running the original `_V1`/`_V2` text blobs directly — the
+    representation changed, not what gets created.
+    """
+    from sublease.store.schema import _V2
+
+    fresh = connect(":memory:")
+    migrate(fresh)
+
+    blob_conn = sqlite3.connect(":memory:")
+    blob_conn.row_factory = sqlite3.Row
+    blob_conn.executescript(_V1)
+    blob_conn.executescript(_V2)
+
+    fresh_schema = {k: v for k, v in schema_sql(fresh).items() if k[1] != "schema_version"}
+    blob_schema = schema_sql(blob_conn)
+    assert fresh_schema == blob_schema
+
+
+def test_existing_v1_database_migrates_to_the_same_schema_as_a_fresh_one(tmp_path):
+    """The other half of the before/after proof: a database migrated forward
+    from the old v1-only schema must end up with exactly the same DDL as a
+    database migrated from nothing, not merely the same table names.
+    """
+    old = connect(tmp_path / "old.db")
+    old.executescript(_V1)
+    old.execute("CREATE TABLE schema_version (version INT NOT NULL)")
+    old.execute("INSERT INTO schema_version (version) VALUES (1)")
+    migrate(old)
+
+    fresh = connect(tmp_path / "fresh.db")
+    migrate(fresh)
+
+    assert schema_sql(old) == schema_sql(fresh)
+    assert current_version(old) == current_version(fresh) == len(MIGRATIONS)
+
+
+def test_a_migration_statement_containing_a_semicolon_in_a_string_literal_applies_correctly(
+        tmp_path, monkeypatch):
+    """The trap finding 4 warns about: a naive `';'.join`/`.split(';')`
+    migration runner would cut this single statement in half, at the
+    semicolon inside the string literal, and either error or partially
+    apply. Because MIGRATIONS now holds already-split statements — this one
+    is a single list element, semicolon and all — migrate() must apply it
+    whole.
+    """
+    tricky_migration = [
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, note TEXT DEFAULT 'a;b;c')",
+        "INSERT INTO t (id, note) VALUES (1, 'x;y')",
+    ]
+    monkeypatch.setattr("sublease.store.db.MIGRATIONS", [tricky_migration])
+
+    conn = connect(tmp_path / "t.db")
+    new_version = migrate(conn)
+
+    assert new_version == 1
+    assert current_version(conn) == 1
+    row = conn.execute("SELECT note FROM t WHERE id = 1").fetchone()
+    assert row["note"] == "x;y"
+    default_row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name = 't'").fetchone()
+    assert "'a;b;c'" in default_row["sql"]

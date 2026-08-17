@@ -115,3 +115,79 @@ def test_doctor_command_surfaces_the_real_provider_failure_end_to_end(tmp_path, 
     assert "unknown provider" in result.output
     assert "bogus-provider" in result.output
     assert "no provider configured" not in result.output
+
+
+# --- Fix wave 2026-08-15 ----------------------------------------------------
+# Finding 3: `doctor`'s provider check used to call `provider.health()`
+# unconditionally, which for the Anthropic and OpenAI providers issues a
+# real (billable) completion request on every run. The default check must
+# now be the cheap, offline `ready()` check; only `--probe` should reach for
+# `health()`.
+
+class SpyProvider(FakeProvider):
+    """Records which of ready()/health() doctor actually called, so the
+    default-vs-probe wiring can be asserted rather than assumed."""
+
+    def __init__(self):
+        super().__init__()
+        self.ready_calls = 0
+        self.health_calls = 0
+
+    def ready(self):
+        self.ready_calls += 1
+        return ProviderHealth(ok=True, detail="spy ready; connectivity not verified")
+
+    def health(self):
+        self.health_calls += 1
+        return ProviderHealth(ok=True, detail="spy reachable")
+
+
+def test_the_default_provider_check_never_makes_a_real_request(tmp_path):
+    conn = connect(tmp_path / "t.db")
+    migrate(conn)
+    spy = SpyProvider()
+    checks = run_checks(conn=conn, provider=spy, which=lambda _: "/bin/forage")
+    assert spy.ready_calls == 1
+    assert spy.health_calls == 0
+    check = by_name(checks, "llm provider")
+    assert check.ok is True
+    assert "connectivity not verified" in check.detail
+
+
+def test_probe_true_makes_the_real_request_instead(tmp_path):
+    conn = connect(tmp_path / "t.db")
+    migrate(conn)
+    spy = SpyProvider()
+    checks = run_checks(conn=conn, provider=spy, which=lambda _: "/bin/forage",
+                        probe=True)
+    assert spy.ready_calls == 0
+    assert spy.health_calls == 1
+    check = by_name(checks, "llm provider")
+    assert check.detail == "spy reachable"
+
+
+def test_a_failing_provider_construction_is_still_reported_with_no_provider_to_probe(tmp_path):
+    """provider=None (construction failed) must never crash `ready()`/`health()`
+    lookups — the "llm provider" check still reports the construction error,
+    with or without --probe."""
+    conn = connect(tmp_path / "t.db")
+    migrate(conn)
+    checks = run_checks(conn=conn, provider=None, provider_error="boom",
+                        which=lambda _: "/bin/forage", probe=True)
+    check = by_name(checks, "llm provider")
+    assert check.ok is False
+    assert check.detail == "boom"
+
+
+def test_doctor_command_default_output_says_connectivity_was_not_verified(tmp_path, monkeypatch):
+    monkeypatch.setenv("SUBLEASE_HOME", str(tmp_path))
+    runner = CliRunner()
+    result = runner.invoke(app, ["doctor"])
+    assert "connectivity was not verified" in result.output.lower()
+
+
+def test_doctor_probe_help_text_discloses_the_real_request(tmp_path):
+    runner = CliRunner()
+    result = runner.invoke(app, ["doctor", "--help"])
+    assert "--probe" in result.output
+    assert "billable" in result.output.lower() or "real" in result.output.lower()

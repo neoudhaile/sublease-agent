@@ -19,6 +19,16 @@ EMOTICON_TRAPS = {
     ":P": ": P", ":D": ": D", ";)": "; )", ":/": ": /",
 }
 
+# Explicit table rather than `strftime('%b')`: that format code renders in
+# the process's LC_TIME locale, so an outreach draft sent from a machine set
+# to a non-English locale would silently go out in the wrong language. The
+# drafts this package sends are always in English, independent of where the
+# tool happens to run.
+_MONTH_ABBR = {
+    1: "Jan", 2: "Feb", 3: "Mar", 4: "Apr", 5: "May", 6: "Jun",
+    7: "Jul", 8: "Aug", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dec",
+}
+
 
 def sanitize_for_messenger(text: str) -> str:
     for trap, safe in EMOTICON_TRAPS.items():
@@ -27,7 +37,7 @@ def sanitize_for_messenger(text: str) -> str:
 
 
 def _short(day: date) -> str:
-    return f"{day.strftime('%b')} {day.day}"
+    return f"{_MONTH_ABBR[day.month]} {day.day}"
 
 
 def format_span(start: date | None, end: date | None) -> str:

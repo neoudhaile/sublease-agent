@@ -7,6 +7,7 @@ here — this is the one provider that still needs it.
 """
 from __future__ import annotations
 
+import shutil
 import subprocess
 
 from pydantic import BaseModel, ValidationError
@@ -54,6 +55,16 @@ class ClaudeCLIProvider:
             return schema.model_validate_json(_first_json_object(result.stdout))
         except ValidationError as exc:
             raise ProviderError(f"claude -p returned unusable JSON: {exc}") from exc
+
+    def ready(self) -> ProviderHealth:
+        path = shutil.which(self.binary)
+        if not path:
+            return ProviderHealth(
+                ok=False, detail=f"`{self.binary}` is not installed or not on PATH")
+        return ProviderHealth(
+            ok=True,
+            detail=(f"claude cli found at {path} ({self.model}); "
+                    "connectivity not verified"))
 
     def health(self) -> ProviderHealth:
         try:

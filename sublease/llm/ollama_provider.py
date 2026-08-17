@@ -43,6 +43,16 @@ class OllamaProvider:
         except ValidationError as exc:
             raise ProviderError(f"ollama returned unusable JSON: {exc}") from exc
 
+    def ready(self) -> ProviderHealth:
+        try:
+            self._get_http()
+        except Exception as exc:
+            return ProviderHealth(ok=False, detail=str(exc))
+        return ProviderHealth(
+            ok=True,
+            detail=(f"ollama configured ({self.model} @ {self.base_url}); "
+                    "connectivity not verified"))
+
     def health(self) -> ProviderHealth:
         try:
             self.extract_json('Return the JSON object {"ok": true}.', _HealthProbe)

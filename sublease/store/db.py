@@ -33,17 +33,6 @@ def current_version(conn: sqlite3.Connection) -> int:
     return got["version"] if got else 0
 
 
-def _statements(script: str) -> list[str]:
-    """Split a migration script into individual statements.
-
-    executescript() can't be used for a migration's DDL: it issues an implicit COMMIT
-    before it runs, which would end any explicit transaction before the schema_version
-    write could join it. Each migration here is plain DDL with no semicolons inside
-    string literals, so splitting on ';' is safe.
-    """
-    return [s.strip() for s in script.split(";") if s.strip()]
-
-
 def migrate(conn: sqlite3.Connection) -> int:
     """Apply every migration newer than the recorded version. Returns the new version.
 
@@ -52,14 +41,24 @@ def migrate(conn: sqlite3.Connection) -> int:
     applying the schema and recording the version can never happen: either both landed
     or neither did, and current_version() can never disagree with what schema is
     actually present.
+
+    Each entry in `MIGRATIONS` is already a list of individual statements (see
+    `sublease/store/schema.py`), so nothing here splits SQL text on `;` — a
+    migration containing a semicolon inside a string literal or a trigger body
+    is applied exactly as written, statement by statement, instead of being
+    cut apart wherever a `;` happens to appear.
+
+    executescript() still can't be used for a migration's DDL: it issues an
+    implicit COMMIT before it runs, which would end this explicit transaction
+    before the schema_version write could join it.
     """
     version = current_version(conn)
-    for index, script in enumerate(MIGRATIONS, start=1):
+    for index, statements in enumerate(MIGRATIONS, start=1):
         if index <= version:
             continue
         try:
             conn.execute("BEGIN")
-            for statement in _statements(script):
+            for statement in statements:
                 conn.execute(statement)
             conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version INT NOT NULL)")
             conn.execute("DELETE FROM schema_version")

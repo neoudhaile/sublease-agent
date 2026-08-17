@@ -1,4 +1,5 @@
 # tests/test_match_drafts.py
+import locale
 from datetime import date
 import pytest
 from sublease.match.drafts import build_draft, format_span, sanitize_for_messenger
@@ -74,3 +75,21 @@ def test_draft_output_is_always_sanitized():
 def test_a_template_with_no_placeholders_passes_through():
     assert build_draft("Room available, message me.", cand()) == \
         "Room available, message me."
+
+
+# --- Fix wave 2026-08-15 ----------------------------------------------------
+# Finding 2: `_short` used to render the month with `strftime('%b')`, which
+# is locale-dependent (LC_TIME), not just platform-dependent. A draft built
+# on a machine set to a non-English locale would silently go out with a
+# non-English month abbreviation. Drafts are always English, so the month
+# must not move when the process locale does.
+
+def test_month_abbreviation_is_english_regardless_of_process_locale():
+    try:
+        locale.setlocale(locale.LC_TIME, "de_DE.UTF-8")
+    except locale.Error:
+        pytest.skip("de_DE.UTF-8 locale not installed on this machine")
+    try:
+        assert format_span(date(2026, 8, 18), date(2026, 9, 8)) == "Aug 18 – Sep 8"
+    finally:
+        locale.setlocale(locale.LC_TIME, "C")

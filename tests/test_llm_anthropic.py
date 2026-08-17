@@ -108,3 +108,33 @@ def test_health_handles_client_construction_error(monkeypatch):
     health = provider.health()
     assert health.ok is False
     assert "malformed ANTHROPIC_BASE_URL" in health.detail
+
+
+# --- Fix wave 2026-08-15 -----------------------------------------------------
+# Finding 3: `ready()` is the new default `doctor` check — it must confirm
+# credentials/client construction without ever calling `messages.parse`
+# (the billable call).
+
+def test_ready_reports_ok_without_issuing_any_request():
+    client = FakeClient(parsed=Payload(value="ok"))
+    provider = AnthropicProvider(client=client, api_key="k")
+    health = provider.ready()
+    assert health.ok is True
+    assert client.messages.kwargs is None  # parse() was never called
+    assert "not verified" in health.detail
+
+
+def test_ready_reports_the_missing_api_key_without_raising(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    health = AnthropicProvider(client=None, api_key=None).ready()
+    assert health.ok is False and "ANTHROPIC_API_KEY" in health.detail
+
+
+def test_ready_reports_client_construction_errors_without_raising(monkeypatch):
+    def mock_anthropic_raises(*args, **kwargs):
+        raise RuntimeError("malformed ANTHROPIC_BASE_URL")
+
+    monkeypatch.setattr("anthropic.Anthropic", mock_anthropic_raises)
+    health = AnthropicProvider(client=None, api_key="test-key").ready()
+    assert health.ok is False
+    assert "malformed ANTHROPIC_BASE_URL" in health.detail

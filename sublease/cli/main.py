@@ -60,12 +60,26 @@ def _prompt_date(label: str, field: str) -> str:
 
 
 @app.command()
-def doctor(provider: str = DEFAULT_PROVIDER, model: str = DEFAULT_MODEL) -> None:
-    """Check that everything a run needs is present and working."""
+def doctor(
+    provider: str = DEFAULT_PROVIDER, model: str = DEFAULT_MODEL,
+    probe: bool = typer.Option(
+        False, "--probe",
+        help="Also verify provider connectivity with a real completion "
+             "request. Makes an actual API call — billable for the "
+             "Anthropic and OpenAI providers. Without this flag, the "
+             "provider check only confirms credentials are present and the "
+             "client constructs; it does NOT verify connectivity."),
+) -> None:
+    """Check that everything a run needs is present and working.
+
+    By default this is a free, offline check: no request is sent to any LLM
+    provider, so nothing is billed. Pass --probe to also confirm the
+    provider actually answers, at the cost of one real (billable) request.
+    """
     conn = connect()
     resolved_provider, provider_error = _provider(provider, model)
     checks = run_checks(conn=conn, provider=resolved_provider,
-                        provider_error=provider_error)
+                        provider_error=provider_error, probe=probe)
     table = Table(title="sublease doctor")
     table.add_column("check")
     table.add_column("status")
@@ -74,6 +88,10 @@ def doctor(provider: str = DEFAULT_PROVIDER, model: str = DEFAULT_MODEL) -> None
         mark = "[green]ok[/green]" if check.ok else "[red]FAIL[/red]"
         table.add_row(check.name, mark, check.detail)
     console.print(table)
+    if not probe:
+        console.print(
+            "[dim]Provider connectivity was not verified — run with --probe "
+            "for a real (billable) request.[/dim]")
     raise typer.Exit(0 if all(c.ok for c in checks) else 1)
 
 

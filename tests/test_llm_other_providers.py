@@ -219,3 +219,49 @@ def test_claude_cli_health_fails_gracefully_on_timeout():
 
     health = ClaudeCLIProvider(runner=timeout_runner).health()
     assert health.ok is False
+
+
+# --- Fix wave 2026-08-15 -----------------------------------------------------
+# Finding 3: each provider's `ready()` must confirm it's configured without
+# issuing the real (billable, for openai/anthropic) request `health()` makes.
+
+def test_openai_ready_is_ok_without_any_http_call():
+    http = FakeHttp(openai_response(json.dumps({"value": "ok"})))
+    health = OpenAIProvider(api_key="k", http=http).ready()
+    assert health.ok is True
+    assert http.calls == []  # no request was made
+    assert "not verified" in health.detail
+
+
+def test_openai_ready_reports_the_missing_api_key():
+    health = OpenAIProvider(api_key=None, http=FakeHttp(None)).ready()
+    assert health.ok is False and "OPENAI_API_KEY" in health.detail
+
+
+def test_ollama_ready_is_ok_without_any_http_call():
+    http = FakeHttp(FakeResponse({"response": json.dumps({"value": "x"})}))
+    health = OllamaProvider(http=http).ready()
+    assert health.ok is True
+    assert http.calls == []
+    assert "not verified" in health.detail
+
+
+def test_claude_cli_ready_is_ok_when_binary_is_on_path(monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda binary: f"/usr/bin/{binary}")
+    calls = []
+
+    def unexpected_runner(cmd, **kwargs):
+        calls.append(cmd)
+        raise AssertionError("ready() must not invoke the CLI")
+
+    health = ClaudeCLIProvider(runner=unexpected_runner).ready()
+    assert health.ok is True
+    assert calls == []
+    assert "not verified" in health.detail
+
+
+def test_claude_cli_ready_fails_when_binary_is_missing(monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda binary: None)
+    health = ClaudeCLIProvider().ready()
+    assert health.ok is False
+    assert "not installed" in health.detail

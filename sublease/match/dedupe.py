@@ -37,13 +37,17 @@ def person_key(
     return base
 
 
-def _parse_epoch(raw: str | None) -> float | None:
+def parse_post_date_epoch(raw: str | None) -> float | None:
     """Best-effort parse of a free-text post_date into a comparable epoch.
 
     Handles ISO-8601 dates/datetimes and bare unix timestamps. Anything else
     (human strings like "Aug 9", empty text, None) returns None so the caller
     can treat it as the oldest possible post rather than raising or winning
     a lexicographic comparison it has no business winning.
+
+    Public: this is the one date-aware parser for `post_date` in the whole
+    package. `ranking.py` reuses it (via `recency_sort_key`) rather than
+    sorting the same field as a raw string a second time.
     """
     if not raw:
         return None
@@ -67,16 +71,19 @@ def _parse_epoch(raw: str | None) -> float | None:
         return None
 
 
-def _sort_key(candidate: Candidate) -> tuple[float, str]:
-    epoch = _parse_epoch(candidate.post_date)
-    # Unparseable/missing dates sort as oldest; post_id gives a deterministic
-    # tiebreak instead of leaving genuinely-tied candidates in input order.
+def recency_sort_key(candidate: Candidate) -> tuple[float, str]:
+    """Sort key for "most recent post first". Shared by dedupe and ranking.
+
+    Unparseable/missing dates sort as oldest; post_id gives a deterministic
+    tiebreak instead of leaving genuinely-tied candidates in input order.
+    """
+    epoch = parse_post_date_epoch(candidate.post_date)
     return (epoch if epoch is not None else float("-inf"), candidate.post_id or "")
 
 
 def dedupe_people(candidates: list[Candidate]) -> list[Candidate]:
     """Keep the newest post per person; fold the rest into `also_posted_in`."""
-    newest_first = sorted(candidates, key=_sort_key, reverse=True)
+    newest_first = sorted(candidates, key=recency_sort_key, reverse=True)
 
     kept: dict[str, Candidate] = {}
     for candidate in newest_first:

@@ -16,13 +16,22 @@ ENRICHMENT_TRUNCATE = 1200
 OFFER_TRUNCATE = 1500
 
 
+def _labor_day_str(holiday: date) -> str:
+    """Render "<Month> <day>" without a leading zero, e.g. "September 6".
+
+    `strftime('%-d')` is a glibc/BSD extension that raises ValueError on
+    Windows, so the day number is interpolated directly instead.
+    """
+    return f"{holiday.strftime('%B')} {holiday.day}"
+
+
 def build_extraction_prompt(posts: list[dict], today: date) -> str:
     """Pass 1: is this person seeking, and for which dates?"""
     holiday = labor_day(today.year)
     header = f"""\
 You extract structured data from Facebook group posts about housing.
 Today's date is {today.isoformat()}. Assume the year {today.year} for any date
-without a year. Labor Day {today.year} is {holiday.strftime('%B %-d')}.
+without a year. Labor Day {today.year} is {_labor_day_str(holiday)}.
 
 For each post return an object with:
 - "id": copied verbatim from the input
@@ -94,7 +103,7 @@ def build_offer_prompt(posts: list[dict], today: date) -> str:
 You extract structured pricing data from Facebook group posts that are
 OFFERING a room, apartment, or sublet (as opposed to someone looking for one).
 Today's date is {today.isoformat()}. Assume the year {today.year} for any date
-without a year. Labor Day {today.year} is {holiday.strftime('%B %-d')}.
+without a year. Labor Day {today.year} is {_labor_day_str(holiday)}.
 
 For each post return an object with:
 - "id": copied verbatim from the input

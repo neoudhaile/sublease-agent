@@ -35,10 +35,18 @@ def _check_database(conn: sqlite3.Connection) -> Check:
     return Check("database", True, f"schema v{version}")
 
 
-def _check_provider(provider, error: str | None = None) -> Check:
+def _check_provider(provider, error: str | None = None, probe: bool = False) -> Check:
+    """Default (`probe=False`): a cheap, offline check via `provider.ready()`
+    — credentials present, client constructs. No request is made, so nothing
+    is billed, and connectivity is NOT verified.
+
+    `probe=True` (from `sublease doctor --probe`): the full round-trip via
+    `provider.health()`, which issues a real completion request — billable
+    for the Anthropic and OpenAI providers.
+    """
     if provider is None:
         return Check("llm provider", False, error or "no provider configured")
-    health = provider.health()
+    health = provider.health() if probe else provider.ready()
     return Check("llm provider", health.ok, health.detail)
 
 
@@ -64,10 +72,11 @@ def _check_profile(conn: sqlite3.Connection) -> Check:
 
 def run_checks(conn: sqlite3.Connection | None = None, provider=None,
                provider_error: str | None = None,
-               forage_binary: str = "forage", which=shutil.which) -> list[Check]:
+               forage_binary: str = "forage", which=shutil.which,
+               probe: bool = False) -> list[Check]:
     return [
         _check_database(conn),
-        _check_provider(provider, provider_error),
+        _check_provider(provider, provider_error, probe),
         _check_forage(forage_binary, which),
         _check_profile(conn),
     ]

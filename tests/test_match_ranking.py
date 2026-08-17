@@ -145,3 +145,21 @@ def test_to_rows_serialises_open_dates_as_none():
                [extraction("p1", start="2026-08-22", end=None)], {}, a_profile())
     row = to_rows(got)[0]
     assert row["wants_end"] is None
+
+
+# --- Fix wave 2026-08-15 ----------------------------------------------------
+# Finding 1: ranking used to break recency ties with a raw string comparison
+# on `post_date`, the same bug class dedupe.py was fixed for. A unix
+# timestamp string and an ISO date string compare backwards as raw strings
+# (any "17xxxxxxxx" timestamp sorts below any "20xx-xx-xx" ISO date purely
+# because '1' < '2'), regardless of which post is actually newer.
+
+def test_recency_tie_break_understands_mixed_date_formats():
+    # p1 is genuinely the newer post (2026-08-20) but stored as a unix
+    # timestamp; p2 is genuinely older (2026-01-01) but stored as an ISO
+    # date. A raw string sort would rank p2 "newer" since "2026-01-01" >
+    # "1787184000" lexicographically. The date-aware key must not.
+    posts = {"p1": post("p1", "Newer", posted="1787184000"),
+             "p2": post("p2", "Older", posted="2026-01-01")}
+    got = rank(posts, [extraction("p1"), extraction("p2")], {}, a_profile())
+    assert [c.name for c in got] == ["Newer", "Older"]

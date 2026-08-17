@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 Confidence = Literal["high", "medium", "low"]
 Gender = Literal["male", "female"]
@@ -47,6 +47,14 @@ PriceUnit = Literal["night", "week", "month", "period"]
 
 
 class OfferItem(BaseModel):
+    # Rejects unknown fields so an ExtractionBatch- or EnrichmentBatch-shaped
+    # payload (e.g. carrying "is_seeking" or "confidence") cannot silently
+    # satisfy this schema with every real offer field defaulted to null — the
+    # marker-collision hazard tests/fakes.py documents. A genuinely sparse
+    # listing (only `id` known) still validates fine, since omitting an
+    # optional field is not the same as sending an extra, unrecognized one.
+    model_config = ConfigDict(extra="forbid")
+
     id: str
     price_amount: str | float | int | None = None
     price_unit: PriceUnit | None = None

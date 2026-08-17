@@ -25,12 +25,27 @@ from sublease.extract.schemas import EnrichmentBatch, ExtractionBatch, OfferBatc
 DEFAULT_BATCH = 12
 
 # Recall-oriented prefilter for pass 3: a post with no price-like token cannot
-# state what it costs, so it never needs to reach a model. Requires either a
-# currency mark or a number paired with a rate unit, so bare numbers (unit
-# counts, dates written as digits) don't trigger a spend.
+# state what it costs, so it never needs to reach a model. The asymmetry here
+# is deliberate and lopsided: a false positive costs one wasted model call
+# (fractions of a cent); a false negative permanently drops a priced post
+# from the comp set, since extraction is write-once and cached by post id.
+# So this favours recall over precision - it matches a currency symbol next
+# to a number (either side), a bare number followed by a rate word in any of
+# its common spellings ("a month", "monthly", "per night", "/mo", "pm", ...),
+# the "1.4k" shorthand, and numbers written with a thousands comma - while
+# still requiring a digit run somewhere, so bare unit counts ("3 bedroom")
+# and phone numbers don't trigger a spend.
 PRICE_HINT = re.compile(
-    r"\$\s?\d|\bUSD\b|\d\s*(?:/|per\b)\s*(?:night|nite|wk|week|mo\b|month)",
-    re.IGNORECASE,
+    r"""
+    \$\s?\d                                              # $1400
+  | \d\s?\$                                               # 1400$
+  | \bUSD\b
+  | \d{1,3}(?:,\d{3})+                                     # 1,400 (comma-grouped)
+  | \d+(?:\.\d+)?\s*k\b                                    # 1.4k shorthand
+  | \d[\d,]*\s*(?:/|a|per)?\s*
+    (?:night(?:ly)?|nite|wk|week(?:ly)?|mo(?:nth)?(?:ly)?|pm)\b
+    """,
+    re.IGNORECASE | re.VERBOSE,
 )
 
 

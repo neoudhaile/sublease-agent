@@ -1,5 +1,8 @@
 from datetime import date
 
+import pytest
+from pydantic import ValidationError
+
 from sublease.extract.prompts import build_offer_prompt
 from sublease.extract.runner import (
     parse_int, parse_price_amount, price_hint_matches, run_offer_extraction,
@@ -42,10 +45,36 @@ def test_price_hint_rejects_plain_numbers_with_no_price_context():
         assert price_hint_matches(text) is False, text
 
 
+def test_price_hint_catches_ordinary_no_symbol_phrasings():
+    """Recall is the whole point of this prefilter: a false negative drops a
+    priced post from the comp set permanently (extraction is write-once and
+    cached by post id), while a false positive costs one wasted model call.
+    These are all plausible FB-post phrasings that a precision-leaning regex
+    would miss."""
+    for text in [
+        "1400 a month", "1400 monthly", "rent is 1400 monthly",
+        "1400$", "$1400", "asking 1,400 for the room",
+        "1.4k a month", "60 a night", "60 nightly",
+        "350 a week", "350 weekly", "1400pm",
+    ]:
+        assert price_hint_matches(text) is True, text
+
+
+def test_price_hint_still_skips_genuinely_price_free_posts():
+    """Widening for recall must not become 'match everything' — that would
+    waste a model call on every post, defeating the prefilter's purpose."""
+    for text in [
+        "Move in Aug 20, 3 bedroom apt", "call me at 555 1234", "2 people",
+        "Looking for a room near campus, flexible on move-in date",
+        "3 bedroom, 2 bath, available now", "text me for details",
+    ]:
+        assert price_hint_matches(text) is False, text
+
+
 # --- happy path / row shaping ----------------------------------------------
 
 def test_priced_offer_is_extracted_and_shaped_for_the_repository():
-    provider = FakeProvider(responses={"fbpost:1": {"results": [
+    provider = FakeProvider(responses={"OfferBatch:fbpost:1": {"results": [
         {"id": "fbpost:1", "price_amount": "1400", "price_unit": "month",
          "currency": "USD", "neighborhood": "East Village", "unit_type": "room",
          "bedrooms": "2", "bath": "shared", "furnished": True,
@@ -72,7 +101,7 @@ def test_extracted_row_keys_exactly_match_offer_repo_columns():
     """A key mismatch against OFFER_COLUMNS is silent (repo uses .get() per
     column), so this pins the row shape against the real column list rather
     than a hand-copied one."""
-    provider = FakeProvider(responses={"fbpost:1": {"results": [
+    provider = FakeProvider(responses={"OfferBatch:fbpost:1": {"results": [
         {"id": "fbpost:1", "price_amount": "60", "price_unit": "night"},
     ]}})
     rows = run_offer_extraction(
@@ -104,7 +133,7 @@ def test_every_post_gets_exactly_one_row_even_when_some_fail():
     posts = [post("fbpost:1", "$1400/mo POISON"), post("fbpost:2", "$1400/mo good"),
              post("fbpost:3", "no price mentioned at all")]
     provider = FakeProvider(
-        responses={"fbpost:2": {"results": [
+        responses={"OfferBatch:fbpost:2": {"results": [
             {"id": "fbpost:2", "price_amount": "1400", "price_unit": "month"}]}},
         fail_on={"POISON"})
     rows = run_offer_extraction(posts, provider, today=TODAY, batch_size=1)
@@ -123,9 +152,9 @@ def test_a_failing_batch_bisects_to_isolate_the_offending_post():
     good2 = post("fbpost:3", "$1400/mo also good")
     provider = FakeProvider(
         responses={
-            "fbpost:1": {"results": [
+            "OfferBatch:fbpost:1": {"results": [
                 {"id": "fbpost:1", "price_amount": "1400", "price_unit": "month"}]},
-            "fbpost:3": {"results": [
+            "OfferBatch:fbpost:3": {"results": [
                 {"id": "fbpost:3", "price_amount": "1400", "price_unit": "month"}]},
         },
         fail_on={"POISON"})
@@ -146,7 +175,7 @@ def test_bisect_isolates_offender_without_dropping_the_others_in_a_larger_batch(
              for n in range(1, 6)]
     posts[3] = post("fbpost:4", "$1400/mo POISON")
     responses = {
-        p["id"]: {"results": [
+        f"OfferBatch:{p['id']}": {"results": [
             {"id": p["id"], "price_amount": "1400", "price_unit": "month"}]}
         for p in posts if p["id"] != "fbpost:4"
     }
@@ -164,7 +193,7 @@ def test_duplicated_and_missing_ids_are_treated_as_a_batch_failure():
     posts = [post("fbpost:1", "$1400/mo one"), post("fbpost:2", "$1500/mo two"),
              post("fbpost:3", "$1600/mo three")]
     # right count (3), but fbpost:1 duplicated and fbpost:3 missing
-    provider = FakeProvider(responses={"POSTS": {"results": [
+    provider = FakeProvider(responses={"OfferBatch:POSTS": {"results": [
         {"id": "fbpost:1", "price_amount": "1400", "price_unit": "month"},
         {"id": "fbpost:1", "price_amount": "1400", "price_unit": "month"},
         {"id": "fbpost:2", "price_amount": "1500", "price_unit": "month"},
@@ -177,7 +206,7 @@ def test_duplicated_and_missing_ids_are_treated_as_a_batch_failure():
 
 def test_unknown_id_in_the_response_is_treated_as_a_batch_failure():
     posts = [post("fbpost:1", "$1400/mo one"), post("fbpost:2", "$1500/mo two")]
-    provider = FakeProvider(responses={"POSTS": {"results": [
+    provider = FakeProvider(responses={"OfferBatch:POSTS": {"results": [
         {"id": "fbpost:1", "price_amount": "1400", "price_unit": "month"},
         {"id": "fbpost:999", "price_amount": "1500", "price_unit": "month"},
     ]}})
@@ -190,14 +219,14 @@ def test_unknown_id_in_the_response_is_treated_as_a_batch_failure():
 
 def test_a_short_model_response_is_treated_as_a_batch_failure():
     posts = [post("fbpost:1", "$1400/mo one"), post("fbpost:2", "$1500/mo two")]
-    provider = FakeProvider(responses={"POSTS": {"results": []}})
+    provider = FakeProvider(responses={"OfferBatch:POSTS": {"results": []}})
     rows = rows_by_id(run_offer_extraction(posts, provider, today=TODAY, batch_size=2))
     assert all(r["error"] is not None for r in rows.values())
 
 
 def test_batches_are_capped_at_the_batch_size():
     posts = [post(f"fbpost:{n}", f"${n}00/night") for n in range(1, 6)]
-    provider = FakeProvider(responses={"POSTS": {"results": [
+    provider = FakeProvider(responses={"OfferBatch:POSTS": {"results": [
         {"id": p["id"], "price_amount": "100", "price_unit": "night"}
         for p in posts[:2]]}})
     run_offer_extraction(posts[:2], provider, today=TODAY, batch_size=2)
@@ -269,3 +298,34 @@ def test_offer_schema_allows_all_fields_null_except_id():
     batch = OfferBatch.model_validate({"results": [{"id": "fbpost:6"}]})
     assert batch.results[0].price_amount is None
     assert batch.results[0].unit_type is None
+
+
+def test_offer_schema_rejects_an_extraction_shaped_payload():
+    """The marker-collision hazard tests/fakes.py documents: the same post id
+    sent through extraction then offer shares a bare marker, so an
+    ExtractionBatch-shaped canned response could silently satisfy an
+    OfferBatch call. It must not: OfferItem should reject the extraction-only
+    fields (is_seeking, date_text, budget, confidence) as unknown, not
+    quietly default every offer field to null."""
+    with pytest.raises(ValidationError):
+        OfferBatch.model_validate({"results": [
+            {"id": "fbpost:1", "is_seeking": True, "start_date": "2026-08-01",
+             "confidence": "high"},
+        ]})
+
+
+def test_extraction_shaped_response_cannot_silently_satisfy_an_offer_call():
+    """End-to-end version of the collision above, through the real runner and
+    FakeProvider: register the response under a BARE marker (as a shared
+    provider across passes would produce), shaped like an ExtractionBatch
+    result. run_offer_extraction must fail loudly for that post — a recorded
+    per-post error — not return a row of silent nulls."""
+    provider = FakeProvider(responses={"fbpost:1": {"results": [
+        {"id": "fbpost:1", "is_seeking": True, "start_date": "2026-08-01",
+         "confidence": "high"},
+    ]}})
+    rows = run_offer_extraction(
+        [post("fbpost:1", "$1400/mo room in East Village")], provider, today=TODAY)
+    row = rows_by_id(rows)["fbpost:1"]
+    assert row["error"] is not None
+    assert row["price_amount"] is None

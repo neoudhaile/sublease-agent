@@ -151,14 +151,18 @@ def test_usable_excludes_offers_with_no_nightly_price(conn):
     assert ids == {"fbpost:1"}
 
 
-def test_usable_can_filter_by_neighborhood(conn):
+def test_usable_returns_every_priced_offer_regardless_of_neighborhood(conn):
+    """`usable()` no longer takes a `neighborhood_filter` — that was an exact
+    string match with no production caller; real neighborhood matching is
+    fuzzy (abbreviations, colloquial names) and lives in
+    `sublease.pricing.comps.select_comps`, not here."""
     PostRepo(conn).upsert_many([a_post("fbpost:1"), a_post("fbpost:2")], now=NOW)
     OfferRepo(conn).save_many([
         an_offer("fbpost:1", neighborhood="East Village"),
         an_offer("fbpost:2", neighborhood="Williamsburg"),
     ], now=NOW)
-    ids = {r["post_id"] for r in OfferRepo(conn).usable(neighborhood_filter="Williamsburg")}
-    assert ids == {"fbpost:2"}
+    ids = {r["post_id"] for r in OfferRepo(conn).usable()}
+    assert ids == {"fbpost:1", "fbpost:2"}
 
 
 def test_offer_is_deleted_when_its_post_is_deleted(conn):

@@ -21,6 +21,7 @@ from sublease.extract.prompts import (
     build_enrichment_prompt, build_extraction_prompt, build_offer_prompt,
 )
 from sublease.extract.schemas import EnrichmentBatch, ExtractionBatch, OfferBatch
+from sublease.pricing.normalize import normalize_nightly
 
 DEFAULT_BATCH = 12
 
@@ -184,10 +185,26 @@ def parse_int(value) -> int | None:
     return int(match.group()) if match else None
 
 
+def _nightly_price(price_amount: float | None, price_unit: str | None,
+                   start_date: str | None, end_date: str | None) -> float | None:
+    """Compute the canonical `nightly_price` at write time, once, from an
+    already-parsed offer row's fields.
+
+    This is the whole point of doing the conversion here rather than at read
+    time: `extraction` and `enrichment` are write-once, and offers must be
+    too — a row's `nightly_price` is fixed the moment it is stored, so
+    `OfferRepo.usable()` (a plain `nightly_price IS NOT NULL` filter) sees a
+    real number instead of perpetually empty rows.
+    """
+    start = date.fromisoformat(start_date) if start_date else None
+    end = date.fromisoformat(end_date) if end_date else None
+    return normalize_nightly(price_amount, price_unit, start, end)
+
+
 def _skipped_offer(post: dict) -> dict:
     return {"post_id": post["id"], "price_amount": None, "price_unit": None,
-            "currency": None, "neighborhood": None, "unit_type": None,
-            "bedrooms": None, "bath": None, "furnished": None,
+            "nightly_price": None, "currency": None, "neighborhood": None,
+            "unit_type": None, "bedrooms": None, "bath": None, "furnished": None,
             "start_date": None, "end_date": None, "model": None, "error": None}
 
 
@@ -219,15 +236,23 @@ def _offer_batch(posts: list[dict], provider, today: date) -> list[dict]:
         return (_offer_batch(posts[:mid], provider, today)
                 + _offer_batch(posts[mid:], provider, today))
 
-    return [
-        {"post_id": item.id, "price_amount": parse_price_amount(item.price_amount),
-         "price_unit": item.price_unit, "currency": item.currency,
-         "neighborhood": item.neighborhood, "unit_type": item.unit_type,
-         "bedrooms": parse_int(item.bedrooms), "bath": item.bath,
-         "furnished": item.furnished, "start_date": parse_iso_date(item.start_date),
-         "end_date": parse_iso_date(item.end_date), "model": provider.model, "error": None}
-        for item in batch.results
-    ]
+    rows = []
+    for item in batch.results:
+        price_amount = parse_price_amount(item.price_amount)
+        start_date = parse_iso_date(item.start_date)
+        end_date = parse_iso_date(item.end_date)
+        rows.append({
+            "post_id": item.id, "price_amount": price_amount,
+            "price_unit": item.price_unit,
+            "nightly_price": _nightly_price(price_amount, item.price_unit,
+                                            start_date, end_date),
+            "currency": item.currency, "neighborhood": item.neighborhood,
+            "unit_type": item.unit_type, "bedrooms": parse_int(item.bedrooms),
+            "bath": item.bath, "furnished": item.furnished,
+            "start_date": start_date, "end_date": end_date,
+            "model": provider.model, "error": None,
+        })
+    return rows
 
 
 def run_offer_extraction(posts: list[dict], provider, today: date,

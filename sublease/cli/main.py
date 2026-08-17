@@ -10,13 +10,18 @@ from rich.console import Console
 from rich.table import Table
 
 from sublease.cli.doctor import run_checks
-from sublease.cli.init import DEFAULT_TEMPLATES, build_profile, parse_date
+from sublease.cli.init import (
+    DEFAULT_TEMPLATES, build_profile, parse_date, suggested_nightly_price,
+)
+from sublease.cli.price import price_lines
 from sublease.cli.report import candidates_table, coverage_lines, rows_to_csv
-from sublease.errors import ConfigError
+from sublease.errors import ConfigError, ProviderError
 from sublease.llm.registry import DEFAULT_MODEL, DEFAULT_PROVIDER, get_provider
 from sublease.match.coverage import coverage as compute_coverage
 from sublease.match.ranking import rank
 from sublease.pipeline import run_pipeline
+from sublease.pricing.service import price_place
+from sublease.profile.models import Place, Window
 from sublease.sources.registry import get_source
 from sublease.store.db import connect, migrate
 from sublease.store.repositories import (
@@ -72,8 +77,64 @@ def doctor(provider: str = DEFAULT_PROVIDER, model: str = DEFAULT_MODEL) -> None
     raise typer.Exit(0 if all(c.ok for c in checks) else 1)
 
 
+def _price_for_init(conn, answers: dict, provider_name: str, model_name: str) -> float:
+    """Ask for the total price — optionally offering a price check first.
+
+    Typing a number here behaves exactly as it always has: this function
+    only branches when the user leaves the prompt blank, which is how they
+    say "I don't know yet." That keeps the existing flow byte-for-byte
+    unchanged for anyone who already knows their price, and this optional
+    step never blocks onboarding — a declined offer, or an unavailable
+    model, both fall straight through to the same manual prompt.
+    """
+    raw = typer.prompt(
+        "Total price for the whole window (leave blank for a price check)",
+        default="", show_default=False)
+    if raw.strip():
+        return float(raw)
+
+    if not typer.confirm(
+            "No price yet — want a price check based on real listings "
+            "(or a labelled estimate if none exist yet)?", default=True):
+        return float(typer.prompt("Total price for the whole window"))
+
+    llm, llm_error = _provider(provider_name, model_name)
+    if llm is None:
+        console.print(f"[yellow]price check unavailable: {llm_error}[/yellow]")
+        return float(typer.prompt("Total price for the whole window"))
+
+    start = parse_date("window_start", answers["window_start"])
+    end = parse_date("window_end", answers["window_end"])
+    nights = (end - start).days + 1
+    place = Place(neighborhood=answers["neighborhood"],
+                 unit_type=answers.get("unit_type", "room"))
+
+    try:
+        result = price_place(
+            conn, place, Window(start=start, end=end), llm, date_cls.today())
+    except ProviderError as exc:
+        console.print(f"[yellow]price check unavailable: {exc}[/yellow]")
+        return float(typer.prompt("Total price for the whole window"))
+
+    console.print("")
+    for line in price_lines(result):
+        console.print(line)
+    console.print("")
+
+    suggestion = suggested_nightly_price(result)
+    if suggestion is not None:
+        label = "estimated" if result.mode == "estimate" else "suggested"
+        total = suggestion * nights
+        if typer.confirm(
+                f"Use the {label} ${suggestion:.0f}/night "
+                f"(${total:,.0f} total for {nights} nights)?", default=True):
+            return total
+
+    return float(typer.prompt("Total price for the whole window"))
+
+
 @app.command()
-def init() -> None:
+def init(provider: str = DEFAULT_PROVIDER, model: str = DEFAULT_MODEL) -> None:
     """Create a profile: your place, your dates, your constraints."""
     conn = connect()
     migrate(conn)
@@ -107,13 +168,15 @@ def init() -> None:
                                      "window_start"),
         "window_end": _prompt_date("Last date available (YYYY-MM-DD)",
                                    "window_end"),
-        "total_price": float(typer.prompt("Total price for the whole window")),
+    }
+    answers["total_price"] = _price_for_init(conn, answers, provider, model)
+    answers.update({
         "allow_split": typer.confirm(
             "Would you accept several subletters covering different dates?",
             default=True),
         "max_people_per_room": int(typer.prompt(
             "Maximum people sharing the room", default="1")),
-    }
+    })
 
     preference = typer.prompt(
         "Do you have a preference for the gender of the person renting from "
@@ -209,6 +272,28 @@ def run(fixtures: bool = typer.Option(False, help="Use synthetic posts, no Faceb
         f"{report.candidates} candidates ({report.new_candidates} new).")
     if dry_run:
         console.print("[yellow]dry run — nothing was written[/yellow]")
+
+
+@app.command()
+def price(provider: str = DEFAULT_PROVIDER, model: str = DEFAULT_MODEL) -> None:
+    """Suggest a nightly price from real comps, or a labelled estimate if none exist yet."""
+    conn = connect()
+    migrate(conn)
+    profile = _active_profile(conn)
+
+    llm, llm_error = _provider(provider, model)
+    if llm is None:
+        console.print(f"[red]provider unavailable: {llm_error}[/red]")
+        raise typer.Exit(1)
+
+    try:
+        result = price_place(conn, profile.place, profile.window, llm, date_cls.today())
+    except ProviderError as exc:
+        console.print(f"[red]price check failed: {exc}[/red]")
+        raise typer.Exit(1)
+
+    for line in price_lines(result):
+        console.print(line)
 
 
 @app.command()

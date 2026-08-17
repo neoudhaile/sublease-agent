@@ -8,7 +8,8 @@ from sublease.extract.runner import (
     parse_int, parse_price_amount, price_hint_matches, run_offer_extraction,
 )
 from sublease.extract.schemas import OfferBatch
-from sublease.store.repositories import OFFER_COLUMNS
+from sublease.store.db import connect, migrate
+from sublease.store.repositories import OFFER_COLUMNS, OfferRepo, PostRepo
 from tests.fakes import FakeProvider
 
 TODAY = date(2026, 8, 11)
@@ -312,6 +313,82 @@ def test_offer_schema_rejects_an_extraction_shaped_payload():
             {"id": "fbpost:1", "is_seeking": True, "start_date": "2026-08-01",
              "confidence": "high"},
         ]})
+
+
+# --- nightly_price is computed at write time, once -------------------------
+
+def test_run_offer_extraction_sets_nightly_price_from_amount_unit_and_dates():
+    """The wiring gap: the runner must compute `nightly_price` itself, before
+    the row ever reaches `OfferRepo.save_many` — otherwise every stored offer
+    has a NULL `nightly_price` and `OfferRepo.usable()` is always empty, no
+    matter how many priced posts were extracted."""
+    provider = FakeProvider(responses={"OfferBatch:fbpost:1": {"results": [
+        {"id": "fbpost:1", "price_amount": "1400", "price_unit": "month"},
+    ]}})
+    rows = run_offer_extraction(
+        [post("fbpost:1", "$1400/mo room")], provider, today=TODAY)
+    row = rows_by_id(rows)["fbpost:1"]
+    assert row["nightly_price"] == pytest.approx(1400 / 30.4)
+
+
+def test_run_offer_extraction_sets_nightly_price_for_period_pricing_with_dates():
+    provider = FakeProvider(responses={"OfferBatch:fbpost:1": {"results": [
+        {"id": "fbpost:1", "price_amount": "1800", "price_unit": "period",
+         "start_date": "2026-08-18", "end_date": "2026-09-08"},
+    ]}})
+    rows = run_offer_extraction(
+        [post("fbpost:1", "$1800 total, Aug 18 - Sep 8")], provider, today=TODAY)
+    row = rows_by_id(rows)["fbpost:1"]
+    # Aug 18 - Sep 8 is 22 inclusive nights, not 21.
+    assert row["nightly_price"] == pytest.approx(1800 / 22)
+
+
+def test_run_offer_extraction_leaves_nightly_price_null_when_unconvertible():
+    """A period price without dates cannot be converted — it must be dropped
+    (null nightly_price), never guessed at, and must never crash the run."""
+    provider = FakeProvider(responses={"OfferBatch:fbpost:1": {"results": [
+        {"id": "fbpost:1", "price_amount": "1800", "price_unit": "period"},
+    ]}})
+    rows = run_offer_extraction(
+        [post("fbpost:1", "$1800 total for the stay")], provider, today=TODAY)
+    row = rows_by_id(rows)["fbpost:1"]
+    assert row["nightly_price"] is None
+
+
+def test_skipped_and_failed_offer_rows_carry_a_null_nightly_price():
+    posts = [post("fbpost:1", "no price at all here"),
+             post("fbpost:2", "$1400/mo POISON")]
+    provider = FakeProvider(fail_on={"POISON"})
+    rows = rows_by_id(run_offer_extraction(posts, provider, today=TODAY, batch_size=1))
+    assert rows["fbpost:1"]["nightly_price"] is None   # prefiltered
+    assert rows["fbpost:2"]["nightly_price"] is None   # failed
+
+
+def test_a_stored_offer_comes_back_usable_when_its_price_converts(tmp_path):
+    """End-to-end proof that closing the wiring gap actually fixes
+    `OfferRepo.usable()`: a real extracted-and-saved row for a convertible
+    price is returned; one whose price cannot be converted is excluded."""
+    conn = connect(tmp_path / "t.db")
+    migrate(conn)
+    PostRepo(conn).upsert_many([
+        {"id": "fbpost:1", "text": "$1400/mo room"},
+        {"id": "fbpost:2", "text": "$1800 total for the stay, no dates given"},
+    ])
+    provider = FakeProvider(responses={
+        "OfferBatch:fbpost:1": {"results": [
+            {"id": "fbpost:1", "price_amount": "1400", "price_unit": "month"}]},
+        "OfferBatch:fbpost:2": {"results": [
+            {"id": "fbpost:2", "price_amount": "1800", "price_unit": "period"}]},
+    })
+    rows = run_offer_extraction(
+        [post("fbpost:1", "$1400/mo room"),
+         post("fbpost:2", "$1800 total for the stay, no dates given")],
+        provider, today=TODAY, batch_size=1)
+    OfferRepo(conn).save_many(rows)
+
+    usable_ids = {r["post_id"] for r in OfferRepo(conn).usable()}
+    assert usable_ids == {"fbpost:1"}
+    assert OfferRepo(conn).by_post_id()["fbpost:2"]["nightly_price"] is None
 
 
 def test_extraction_shaped_response_cannot_silently_satisfy_an_offer_call():

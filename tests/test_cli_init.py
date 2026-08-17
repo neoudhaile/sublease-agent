@@ -3,11 +3,17 @@ import pytest
 from pydantic import ValidationError
 from typer.testing import CliRunner
 
-from sublease.cli.init import DEFAULT_TEMPLATES, build_profile
+from sublease.cli.init import (
+    DEFAULT_TEMPLATES, build_profile, suggested_nightly_price,
+)
 from sublease.cli.main import app
 from sublease.errors import ConfigError
+from sublease.pricing.comps import CompSet
+from sublease.pricing.service import PricingResult
+from sublease.profile.models import Place
 from sublease.store.db import connect, migrate
 from sublease.store.repositories import ProfileRepo
+from tests.fakes import FakeProvider
 
 ANSWERS = {
     "name": "East Village room",
@@ -193,3 +199,130 @@ def test_gender_preference_prompt_says_it_never_excludes_anyone(tmp_path, monkey
     result = runner.invoke(app, ["init"], input=answers)
     assert result.exit_code == 0, result.output
     assert "never exclude" in result.output.lower()
+
+
+# --- Task 4: the optional price check in `init` -----------------------------
+# Typing a price directly (as every test above does) must remain completely
+# unaffected — the tests above passing unchanged is itself part of the proof.
+# The new branch only opens when the price prompt is left blank.
+
+PLACE = Place(neighborhood="East Village", unit_type="room", bedrooms=1)
+
+
+def test_suggested_nightly_price_is_the_median_in_comps_mode():
+    comp_set = CompSet(comps=[], median=71.5, low=60.0, high=90.0, count=5,
+                       dropped=0, thin=False)
+    result = PricingResult(mode="comps", place=PLACE, nights=22, comp_set=comp_set)
+    assert suggested_nightly_price(result) == 71.5
+
+
+def test_suggested_nightly_price_is_the_midpoint_in_estimate_mode():
+    result = PricingResult(mode="estimate", place=PLACE, nights=22,
+                           estimate_low=60.0, estimate_high=90.0)
+    assert suggested_nightly_price(result) == 75.0
+
+
+def test_suggested_nightly_price_is_none_when_nothing_is_computable():
+    result = PricingResult(mode="estimate", place=PLACE, nights=22)
+    assert suggested_nightly_price(result) is None
+    empty_comps = PricingResult(mode="comps", place=PLACE, nights=22,
+                                comp_set=CompSet())
+    assert suggested_nightly_price(empty_comps) is None
+
+
+def test_leaving_the_price_blank_and_declining_the_check_falls_back_to_the_manual_prompt(
+        tmp_path, monkeypatch):
+    monkeypatch.setenv("SUBLEASE_HOME", str(tmp_path))
+    runner = CliRunner()
+    answers = "\n".join([
+        "My sublet", "East Village", "room", "2026-08-18", "2026-09-08",
+        "",       # leave price blank
+        "n",      # decline the price check
+        "2200",   # manual price, same as the old flow
+        "y", "1", "none", "",
+    ]) + "\n"
+    result = runner.invoke(app, ["init"], input=answers)
+    assert result.exit_code == 0, result.output
+
+    conn = connect(tmp_path / "sublease.db")
+    profile = ProfileRepo(conn).list()[0]
+    assert profile.price.total == 2200.0
+
+
+def test_accepting_the_price_check_and_using_the_suggestion(tmp_path, monkeypatch):
+    monkeypatch.setenv("SUBLEASE_HOME", str(tmp_path))
+    provider = FakeProvider(responses={"EstimateResult:East Village": {
+        "low": 60.0, "high": 90.0, "note": None}})
+    monkeypatch.setattr("sublease.cli.main.get_provider",
+                        lambda name, model=None, **kw: provider)
+
+    runner = CliRunner()
+    answers = "\n".join([
+        "My sublet", "East Village", "room", "2026-08-18", "2026-09-08",
+        "",       # leave price blank
+        "y",      # accept the price check
+        "y",      # use the suggested figure
+        "y", "1", "none", "",
+    ]) + "\n"
+    result = runner.invoke(app, ["init"], input=answers)
+    assert result.exit_code == 0, result.output
+    assert "ESTIMATE" in result.output   # visibly labelled, not presented as a real comp
+
+    conn = connect(tmp_path / "sublease.db")
+    profile = ProfileRepo(conn).list()[0]
+    nights = 22   # Aug 18 - Sep 8 inclusive
+    assert profile.price.total == pytest.approx(75.0 * nights)   # midpoint of 60-90
+
+
+def test_accepting_the_check_but_declining_the_suggestion_still_asks_manually(
+        tmp_path, monkeypatch):
+    monkeypatch.setenv("SUBLEASE_HOME", str(tmp_path))
+    provider = FakeProvider(responses={"EstimateResult:East Village": {
+        "low": 60.0, "high": 90.0, "note": None}})
+    monkeypatch.setattr("sublease.cli.main.get_provider",
+                        lambda name, model=None, **kw: provider)
+
+    runner = CliRunner()
+    answers = "\n".join([
+        "My sublet", "East Village", "room", "2026-08-18", "2026-09-08",
+        "",       # leave price blank
+        "y",      # accept the price check
+        "n",      # decline the suggested figure
+        "2500",   # enter their own
+        "y", "1", "none", "",
+    ]) + "\n"
+    result = runner.invoke(app, ["init"], input=answers)
+    assert result.exit_code == 0, result.output
+
+    conn = connect(tmp_path / "sublease.db")
+    profile = ProfileRepo(conn).list()[0]
+    assert profile.price.total == 2500.0
+
+
+def test_an_unavailable_provider_during_the_price_check_never_blocks_init(
+        tmp_path, monkeypatch):
+    """`init` must complete even when the price check can't reach a model —
+    it says so and falls through to the plain manual prompt, exactly like a
+    decline."""
+    monkeypatch.setenv("SUBLEASE_HOME", str(tmp_path))
+
+    def boom(name, model=None, **kw):
+        raise RuntimeError("no api key configured")
+
+    monkeypatch.setattr("sublease.cli.main.get_provider", boom)
+
+    runner = CliRunner()
+    answers = "\n".join([
+        "My sublet", "East Village", "room", "2026-08-18", "2026-09-08",
+        "",       # leave price blank
+        "y",      # accept the offer to check
+        "2200",   # provider unavailable -> falls back to the manual prompt
+        "y", "1", "none", "",
+    ]) + "\n"
+    result = runner.invoke(app, ["init"], input=answers)
+    assert result.exit_code == 0, result.output
+    assert "unavailable" in result.output.lower()
+
+    conn = connect(tmp_path / "sublease.db")
+    profile = ProfileRepo(conn).list()[0]
+    assert profile.price.total == 2200.0

@@ -168,6 +168,12 @@ class ExtractionRepo:
             "SELECT post_id FROM extraction WHERE is_seeking=1 ORDER BY post_id")
         return [r["post_id"] for r in rows]
 
+    def non_seeker_ids(self) -> list[str]:
+        """Posts extraction decided are OFFERING, not seeking — pass 3's candidates."""
+        rows = self.conn.execute(
+            "SELECT post_id FROM extraction WHERE is_seeking=0 ORDER BY post_id")
+        return [r["post_id"] for r in rows]
+
     def done_ids(self) -> set[str]:
         return {r["post_id"] for r in self.conn.execute("SELECT post_id FROM extraction")}
 
@@ -212,13 +218,16 @@ class OfferRepo:
     def done_ids(self) -> set[str]:
         return {r["post_id"] for r in self.conn.execute("SELECT post_id FROM offer")}
 
-    def usable(self, neighborhood_filter: str | None = None) -> list[dict]:
-        sql = "SELECT * FROM offer WHERE nightly_price IS NOT NULL"
-        args: list = []
-        if neighborhood_filter is not None:
-            sql += " AND neighborhood = ?"
-            args.append(neighborhood_filter)
-        return [dict(r) for r in self.conn.execute(sql, args)]
+    def usable(self) -> list[dict]:
+        """Offers with a derived `nightly_price` — the only ones a comp set can use.
+
+        Matching a comp to a place (neighborhood, unit type, bedrooms) is
+        fuzzy and belongs to `sublease.pricing.comps.select_comps`, not here:
+        an exact string match on `neighborhood` would silently miss "EV" vs
+        "East Village" and every other real-world spelling.
+        """
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM offer WHERE nightly_price IS NOT NULL")]
 
 
 class CandidateRepo:

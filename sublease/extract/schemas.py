@@ -39,3 +39,26 @@ class EnrichmentItem(BaseModel):
 
 class EnrichmentBatch(BaseModel):
     results: list[EnrichmentItem]
+
+
+UnitType = Literal["room", "whole_unit"]
+Bath = Literal["shared", "private"]
+PriceUnit = Literal["night", "week", "month", "period"]
+
+
+class OfferItem(BaseModel):
+    id: str
+    price_amount: str | float | int | None = None
+    price_unit: PriceUnit | None = None
+    currency: str | None = None
+    neighborhood: str | None = None
+    unit_type: UnitType | None = None
+    bedrooms: str | int | None = None
+    bath: Bath | None = None
+    furnished: bool | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+
+
+class OfferBatch(BaseModel):
+    results: list[OfferItem]

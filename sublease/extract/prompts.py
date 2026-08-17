@@ -13,6 +13,7 @@ from sublease.extract.dates import labor_day
 
 EXTRACTION_TRUNCATE = 1500
 ENRICHMENT_TRUNCATE = 1200
+OFFER_TRUNCATE = 1500
 
 
 def build_extraction_prompt(posts: list[dict], today: date) -> str:
@@ -76,5 +77,55 @@ Return one object per post, in the same order as the input.
 POSTS:
 """
     payload = [{"id": p["id"], "text": (p["text"] or "")[:ENRICHMENT_TRUNCATE]}
+               for p in posts]
+    return header + json.dumps(payload, ensure_ascii=False)
+
+
+def build_offer_prompt(posts: list[dict], today: date) -> str:
+    """Pass 3: what is this listing offering, and for how much?
+
+    Runs over posts the extraction pass already marked as NOT seeking — i.e.
+    posts offering a room, apartment, or sublet rather than looking for one.
+    The caller decides which posts qualify; this prompt does not re-litigate
+    intent.
+    """
+    holiday = labor_day(today.year)
+    header = f"""\
+You extract structured pricing data from Facebook group posts that are
+OFFERING a room, apartment, or sublet (as opposed to someone looking for one).
+Today's date is {today.isoformat()}. Assume the year {today.year} for any date
+without a year. Labor Day {today.year} is {holiday.strftime('%B %-d')}.
+
+For each post return an object with:
+- "id": copied verbatim from the input
+- "price_amount": the numeric price as stated (e.g. 1400 for "$1400/mo"), or
+  null if no price is stated anywhere in the post
+- "price_unit": "night" | "week" | "month" | "period" - the unit the price
+  was stated in. Use "period" ONLY when the price is a lump sum for the whole
+  stay (e.g. "$1800 for the 3 weeks", "$1800 total") rather than a recurring
+  rate. "period" is only useful together with dates, so whenever you use it,
+  also extract start_date/end_date if the post states or implies them.
+- "currency": the currency, e.g. "USD" - assume "USD" when a $ sign is used
+  and no other currency is stated
+- "neighborhood": the neighborhood or area exactly AS WRITTEN in the post -
+  do not normalize it, expand abbreviations, or guess a canonical name; null
+  if none is mentioned
+- "unit_type": "room" if a single room/bedroom within a shared apartment is
+  being offered, "whole_unit" if the entire apartment/unit is being offered
+- "bedrooms": the number of bedrooms in the unit, if stated, else null
+- "bath": "shared" or "private" if stated, else null
+- "furnished": true/false if stated or clearly implied, else null
+- "start_date": "YYYY-MM-DD" or null - when the listing becomes available
+- "end_date": "YYYY-MM-DD" or null - when it stops being available
+
+Interpret fuzzy phrases sensibly: "early August" ~ Aug 1-7, "mid-August" ~
+Aug 15, "late August" / "end of August" ~ Aug 25-31, "the month of August" =
+Aug 1-31, "through Labor Day" = ending {holiday.isoformat()}.
+
+Return one object per post, in the same order as the input.
+
+POSTS:
+"""
+    payload = [{"id": p["id"], "text": (p["text"] or "")[:OFFER_TRUNCATE]}
                for p in posts]
     return header + json.dumps(payload, ensure_ascii=False)
